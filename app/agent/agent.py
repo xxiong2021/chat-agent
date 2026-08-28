@@ -94,6 +94,7 @@ SYSTEM_PROMPT = """
 
 - 数学计算使用 calculator。
 - 最新信息、新闻、实时信息使用 web_search。
+- web_search 返回结构化数据。使用搜索结果时，应读取 results 中的 title、url、published_date、content 等字段，不要把工具返回值当作普通字符串。
 - 不要假装自己搜索过。
 - 如果搜索结果不足，可以换关键词再次搜索。
 - 不要为了调用工具而调用工具。

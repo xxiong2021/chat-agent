@@ -10,15 +10,15 @@ api_key = os.getenv("TAVILY_API_KEY")
 
 if not api_key:
     raise RuntimeError(
-        "没有找到 TAVILY_API_KEY，请检查 .env 文件"
+        "娌℃湁鎵惧埌 TAVILY_API_KEY锛岃妫€鏌?.env 鏂囦欢"
     )
 
 client = TavilyClient(api_key=api_key)
 
 
-def web_search(query: str, max_results: int = 5) -> str:
+def web_search(query: str, max_results: int = 5) -> dict:
     """
-    搜索互联网，并返回标题、来源、URL、发布时间和摘要。
+    鎼滅储浜掕仈缃戯紝骞惰繑鍥炵粨鏋勫寲鎼滅储缁撴灉銆?
     """
 
     response = client.search(
@@ -32,37 +32,15 @@ def web_search(query: str, max_results: int = 5) -> str:
 
     results = response.get("results", [])
 
-    if not results:
-        return "没有找到相关搜索结果。"
-
-    output = []
-
-    for i, result in enumerate(results, start=1):
-
-        title = result.get("title", "")
-        url = result.get("url", "")
-        content = result.get("content", "")
-        published_date = result.get(
-            "published_date",
-            "未知"
-        )
-
-        output.append(
-            f"""
-结果 {i}
-
-标题：
-{title}
-
-发布时间：
-{published_date}
-
-URL：
-{url}
-
-摘要：
-{content}
-""".strip()
-        )
-
-    return "\n\n".join(output)
+    return {
+        "query": query,
+        "results": [
+            {
+                "title": result.get("title", ""),
+                "url": result.get("url", ""),
+                "published_date": result.get("published_date"),
+                "content": result.get("content", ""),
+            }
+            for result in results
+        ],
+    }
