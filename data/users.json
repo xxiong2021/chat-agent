@@ -1,0 +1,9 @@
+{
+  "users": {
+    "123456789": {
+      "name": "Strong",
+      "enabled": true,
+      "role": "admin"
+    }
+  }
+}

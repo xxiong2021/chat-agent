@@ -1,4 +1,4 @@
-class PermissionManager:
+﻿class PermissionManager:
 
     AUTO = "auto"
     CONFIRM = "confirm"
@@ -6,16 +6,30 @@ class PermissionManager:
     def __init__(self):
 
         self.tool_permissions = {
-
-            # 低风险
             "web_search": self.AUTO,
             "calculator": self.AUTO,
-
-            # 未来加入
+            "file_list": self.AUTO,
+            "file_read": self.AUTO,
+            "file_write": self.CONFIRM,
+            "file_delete": self.CONFIRM,
             "send_email": self.CONFIRM,
             "send_whatsapp": self.CONFIRM,
-            "delete_file": self.CONFIRM,
         }
+
+        # 按用户保存等待确认的操作
+        #
+        # 例如：
+        #
+        # {
+        #     "telegram:123456": {
+        #         "tool_name": "file_write",
+        #         "arguments": {
+        #             "path": "test.txt",
+        #             "content": "hello",
+        #         },
+        #     }
+        # }
+        self.pending_actions = {}
 
     def get_permission(
         self,
@@ -35,4 +49,35 @@ class PermissionManager:
         return (
             self.get_permission(tool_name)
             == self.CONFIRM
+        )
+
+    def set_pending_action(
+        self,
+        user_id: str,
+        tool_name: str,
+        arguments: dict,
+    ) -> None:
+
+        self.pending_actions[user_id] = {
+            "tool_name": tool_name,
+            "arguments": arguments,
+        }
+
+    def get_pending_action(
+        self,
+        user_id: str,
+    ):
+
+        return self.pending_actions.get(
+            user_id
+        )
+
+    def clear_pending_action(
+        self,
+        user_id: str,
+    ) -> None:
+
+        self.pending_actions.pop(
+            user_id,
+            None,
         )
