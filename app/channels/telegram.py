@@ -41,15 +41,15 @@ async def reply_agent(
     验证用户身份，
     然后交给 Agent 处理。
     """
-    print(
-        f"[Telegram] User ID: {update.effective_user.id}"
-    )
-
     if not update.message or not update.message.text:
         return
 
     if not update.effective_user:
         return
+
+    print(
+        f"[Telegram] User ID: {update.effective_user.id}"
+    )
 
     # Telegram 用户唯一 ID
     telegram_id = update.effective_user.id

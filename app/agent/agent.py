@@ -379,29 +379,20 @@ test.txt
 # Confirmation / Cancellation
 # ============================================================
 
-def is_confirmation(message: str) -> bool:
+def is_confirmation(
+    message: str,
+    confirmation_token: str,
+) -> bool:
     """
     判断用户是否明确确认执行。
     """
 
     text = message.strip().lower()
 
-    confirmation_words = {
-        "确认",
-        "确定",
-        "可以",
-        "执行",
-        "批准",
-        "同意",
-        "好的",
-        "好",
-        "yes",
-        "y",
-        "ok",
-        "okay",
+    return text in {
+        f"确认 {confirmation_token}".lower(),
+        f"confirm {confirmation_token}".lower(),
     }
-
-    return text in confirmation_words
 
 
 def is_cancellation(message: str) -> bool:
@@ -600,6 +591,9 @@ def extract_file_path_for_delete(message: str):
         if not after and before.strip():
 
             candidate = before.strip()
+
+            if candidate.startswith("把"):
+                candidate = candidate[1:].strip()
 
         else:
 
@@ -958,12 +952,14 @@ def create_pending_action(
         ensure_ascii=False,
         indent=2,
     )
+    confirmation_token = saved_action["confirmation_token"]
 
     return (
         "这个操作需要你的确认才能执行。\n\n"
         f"操作：{tool_name}\n"
         f"参数：\n{arguments_text}\n\n"
-        "请回复“确认”执行，"
+        "此操作将在 5 分钟后过期。\n"
+        f"请回复“确认 {confirmation_token}”执行，"
         "或回复“取消”放弃。"
     )
 
@@ -1009,7 +1005,10 @@ def ask_agent(
         # 用户确认
         # ----------------------------------------------------
 
-        if is_confirmation(message):
+        if is_confirmation(
+            message,
+            pending_action["confirmation_token"],
+        ):
 
             return execute_pending_action(
                 user_id
@@ -1052,7 +1051,8 @@ def ask_agent(
             "当前有一个操作正在等待你的确认。\n\n"
             f"待执行操作：{pending_action['tool_name']}\n"
             f"参数：\n{arguments_text}\n\n"
-            "请回复“确认”执行，"
+            "此操作将在 5 分钟后过期。\n"
+            f"请回复“确认 {pending_action['confirmation_token']}”执行，"
             "或回复“取消”放弃。"
         )
 
@@ -1365,48 +1365,10 @@ def ask_agent(
                     f"requires confirmation"
                 )
 
-                permission_manager.set_pending_action(
+                return create_pending_action(
                     user_id,
                     function_name,
                     arguments,
-                )
-
-                saved_action = (
-                    permission_manager.get_pending_action(
-                        user_id
-                    )
-                )
-
-                print(
-                    f"[Permission] "
-                    f"saved pending_action="
-                    f"{saved_action}"
-                )
-
-                if not saved_action:
-
-                    print(
-                        "[Permission] "
-                        "ERROR: pending action 保存失败"
-                    )
-
-                    return (
-                        "无法保存待确认操作，"
-                        "因此没有执行敏感操作。"
-                    )
-
-                arguments_text = json.dumps(
-                    arguments,
-                    ensure_ascii=False,
-                    indent=2,
-                )
-
-                return (
-                    "这个操作需要你的确认才能执行。\n\n"
-                    f"操作：{function_name}\n"
-                    f"参数：\n{arguments_text}\n\n"
-                    "请回复“确认”执行，"
-                    "或回复“取消”放弃。"
                 )
 
             # =================================================

@@ -18,6 +18,12 @@ def _safe_path(path: str) -> Path:
             "禁止访问项目目录之外的文件。"
         )
 
+    relative_parts = target.relative_to(PROJECT_ROOT).parts
+    if any(part.startswith(".") for part in relative_parts):
+        raise PermissionError(
+            "禁止访问隐藏或敏感文件。"
+        )
+
     return target
 
 
@@ -45,6 +51,8 @@ def file_list(path: str = ".") -> dict:
     items = []
 
     for item in sorted(target.iterdir()):
+        if item.name.startswith("."):
+            continue
         items.append(
             {
                 "name": item.name,
