@@ -41,8 +41,17 @@ class LLMRouter:
                     request["tools"] = tools
                     request["tool_choice"] = "auto"
                 if provider == "local":
-                    # Qwen3 thinks by default; disable it for responsive CPU deployments.
-                    request["extra_body"] = {"think": False}
+                    # Qwen3 默认带思考，CPU 部署下非常慢。Ollama 的 OpenAI 兼容
+                    # 接口会忽略 think=false（qwen3:4b 实测无效），所以额外在
+                    # 消息里加 /no_think 指令，Qwen3 模板识别后会彻底关闭思考。
+                    request["extra_body"] = {
+                        "think": False,
+                        "reasoning_effort": "minimal",
+                    }
+                    request["messages"] = [
+                        {"role": "system", "content": "/no_think"},
+                        *messages,
+                    ]
 
                 return client.chat.completions.create(**request)
             except Exception as error:
