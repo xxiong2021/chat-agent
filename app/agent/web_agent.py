@@ -221,6 +221,12 @@ def create_pending_action(user_id: str, tool_name: str, arguments: dict) -> str:
     )
 
 
+def _truncate_content(content: str) -> str:
+    """内容遇到“，然后/接着/再/并/同时”等后续指令时截断。"""
+    parts = re.split(r"[，,。；;]\s*(?:然后|接着|再|并|同时)", content, maxsplit=1)
+    return parts[0].strip()
+
+
 def execute_pending_action(user_id: str, functions: dict) -> str:
     pending = permission_manager.get_pending_action(user_id)
     if not pending:
@@ -231,6 +237,23 @@ def execute_pending_action(user_id: str, functions: dict) -> str:
     if not function:
         permission_manager.clear_pending_action(user_id)
         return f"确认失败：未知工具 {tool_name}"
+
+    # 一次删除多个文件（paths 列表）
+    if tool_name == "file_delete" and isinstance(arguments.get("paths"), list):
+        lines = []
+        for p in arguments["paths"]:
+            try:
+                r = function(path=p)
+            except Exception as e:
+                r = {"success": False, "error": str(e)}
+            if isinstance(r, dict) and r.get("success") is True:
+                lines.append(f"文件删除成功：{p}")
+            else:
+                err = r.get("error", "未知错误") if isinstance(r, dict) else str(r)
+                lines.append(f"文件删除失败：{p}（{err}）")
+        permission_manager.clear_pending_action(user_id)
+        return "\n".join(lines) or "没有可执行的文件。"
+
     try:
         result = function(**arguments)
     except Exception as e:
@@ -271,7 +294,7 @@ def extract_file_write_arguments(message: str):
         text,
     )
     if m:
-        return {"path": m.group(1), "content": m.group(2).strip()}
+        return {"path": m.group(1), "content": _truncate_content(m.group(2))}
 
     path = None
     markers = ["创建文件", "新建文件", "建立文件", "创建一个文件", "新建一个文件"]
@@ -299,7 +322,7 @@ def extract_file_write_arguments(message: str):
             path = filename_part
         if content_part is not None:
             content = content_part.strip().strip(" ：:,")
-            return {"path": path, "content": content}
+            return {"path": path, "content": _truncate_content(content)}
         break
     return None
 
@@ -314,7 +337,8 @@ def looks_like_file_delete_request(message: str) -> bool:
     return any(keyword in text for keyword in delete_keywords)
 
 
-def extract_file_path_for_delete(message: str):
+def extract_file_paths_for_delete(message: str):
+    """提取删除请求中的文件路径，支持一次删除多个文件（用“和/与/、/，”分隔）。"""
     text = message.strip()
     prefixes = [
         "在项目根目录下", "在项目根目录", "项目根目录下", "项目根目录中", "项目根目录里",
@@ -328,32 +352,39 @@ def extract_file_path_for_delete(message: str):
         "删除文件", "删掉文件", "移除文件", "删除一个文件", "删掉一个文件", "移除一个文件",
         "删除", "删掉", "移除", "delete file", "remove file", "delete", "remove",
     ]
-    path = None
+    candidate = None
     for pattern in patterns:
         if pattern not in text:
             continue
         before, after = text.split(pattern, 1)
         after = after.strip(" ：:，,。")
         if not after and before.strip():
-            candidate = before.strip()
-            if candidate.startswith("把"):
-                candidate = candidate[1:].strip()
+            c = before.strip()
+            if c.startswith("把"):
+                c = c[1:].strip()
         else:
-            candidate = after
-        candidate = candidate.strip(" `\"'“”‘’").replace("文件：", "").strip()
-        if candidate.endswith("文件"):
-            candidate = candidate[:-2].strip()
-        candidate = candidate.rstrip(" 。！？!?,，；;").strip()
-        if candidate:
-            path = candidate
-            break
-    if not path:
+            c = after
+        candidate = c
+        break
+    if not candidate:
         return None
-    invalid_fragments = ["吗", "可以吗", "能否", "帮我", "请", "然后"]
-    for fragment in invalid_fragments:
-        if fragment in path:
-            return None
-    return {"path": path}
+
+    raw_parts = re.split(r"[和与、,，及]", candidate)
+    paths = []
+    invalid_fragments = ["吗", "可以吗", "能否", "帮我", "请", "然后", "接着"]
+    for part in raw_parts:
+        p = part.strip(" `\"'“”‘’").replace("文件：", "").strip()
+        if p.endswith("文件"):
+            p = p[:-2].strip()
+        p = p.rstrip(" 。！？!?,，；;").strip()
+        if not p:
+            continue
+        if any(frag in p for frag in invalid_fragments):
+            continue
+        paths.append(p)
+    if not paths:
+        return None
+    return {"paths": paths}
 
 
 def detect_file_list_request(message: str):
@@ -448,7 +479,7 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
         write_args = extract_file_write_arguments(last_text)
         if write_args:
             return create_pending_action(user_id, "file_write", write_args)
-        delete_args = extract_file_path_for_delete(last_text)
+        delete_args = extract_file_paths_for_delete(last_text)
         if delete_args:
             return create_pending_action(user_id, "file_delete", delete_args)
         list_args = detect_file_list_request(last_text)
@@ -461,7 +492,7 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
         # 文件功能未启用：识别文件请求并明确拒绝，避免模型编造结果。
         if (
             extract_file_write_arguments(last_text)
-            or extract_file_path_for_delete(last_text)
+            or extract_file_paths_for_delete(last_text)
             or detect_file_list_request(last_text)
             or detect_file_read_request(last_text)
         ):
