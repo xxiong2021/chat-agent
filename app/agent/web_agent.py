@@ -457,13 +457,37 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
         read_args = detect_file_read_request(last_text)
         if read_args:
             return run_auto_tool(user_id, "file_read", read_args, functions)
+    else:
+        # 文件功能未启用：识别文件请求并明确拒绝，避免模型编造结果。
+        if (
+            extract_file_write_arguments(last_text)
+            or extract_file_path_for_delete(last_text)
+            or detect_file_list_request(last_text)
+            or detect_file_read_request(last_text)
+        ):
+            return "没有权限：本地文件功能未启用。请联系管理员在“管理配置”中开启“本地文件”。"
+
     if web_enabled:
         search_args = detect_web_search_request(last_text)
         if search_args:
             return run_auto_tool(user_id, "web_search", search_args, functions)
+    else:
+        if detect_web_search_request(last_text):
+            return "没有权限：网站搜索功能未启用。请联系管理员在“管理配置”中开启“网站搜索”。"
 
     # ---------------- LLM 多轮工具调用 ----------------
-    llm_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
+    system_prompt = SYSTEM_PROMPT
+    if not files_enabled:
+        system_prompt += (
+            "\n注意：本地文件功能当前未启用。如果用户要求创建、读取、修改、删除文件，"
+            "直接告知“本地文件功能未启用，没有权限”，绝对不要声称已执行文件操作。"
+        )
+    if not web_enabled:
+        system_prompt += (
+            "\n注意：网站搜索功能当前未启用。如果用户要求搜索，"
+            "直接告知“网站搜索功能未启用，没有权限”，不要声称已执行搜索。"
+        )
+    llm_messages = [{"role": "system", "content": system_prompt}, *messages]
 
     for _round in range(1, 9):
         response = LLMRouter().complete(llm_messages, tools=tools)
