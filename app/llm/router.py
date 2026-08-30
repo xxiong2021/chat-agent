@@ -28,8 +28,14 @@ class LLMRouter:
         if settings.get("api_enabled") and api_key:
             yield "api", settings["api_base_url"], api_key, settings["api_model"]
 
-    def _complete_local(self, base_url: str, model: str, messages: list[dict]):
-        # Ollama 原生 /api/chat 才可靠支持 think=false；
+    def _complete_local(
+        self,
+        base_url: str,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ):
+        # Ollama 原生 /api/chat 才可靠支持 think=false 和 tools；
         # OpenAI 兼容的 /v1 接口会忽略 qwen3 的 think 参数和 /no_think 指令。
         api_url = base_url.replace("/v1", "").rstrip("/") + "/api/chat"
         payload = {
@@ -39,18 +45,35 @@ class LLMRouter:
             "think": False,
             "keep_alive": -1,
         }
+        if tools:
+            payload["tools"] = tools
         with httpx.Client(timeout=self.timeout_seconds) as client:
             resp = client.post(api_url, json=payload)
             resp.raise_for_status()
             data = resp.json()
 
         message = data.get("message", {})
+        tool_calls = None
+        raw_calls = message.get("tool_calls") or []
+        if raw_calls:
+            tool_calls = [
+                SimpleNamespace(
+                    id=str(tc.get("id", f"call_{i}")),
+                    type="function",
+                    function=SimpleNamespace(
+                        name=tc.get("function", {}).get("name", ""),
+                        arguments=tc.get("function", {}).get("arguments", "{}"),
+                    ),
+                )
+                for i, tc in enumerate(raw_calls)
+            ]
         return SimpleNamespace(
             choices=[
                 SimpleNamespace(
                     message=SimpleNamespace(
                         content=message.get("content", ""),
                         reasoning=message.get("reasoning", ""),
+                        tool_calls=tool_calls,
                     )
                 )
             ]
@@ -70,7 +93,7 @@ class LLMRouter:
                         local_messages[-1] = last
                     else:
                         local_messages.append({"role": "user", "content": "/no_think"})
-                    return self._complete_local(base_url, model, local_messages)
+                    return self._complete_local(base_url, model, local_messages, tools)
 
                 client = self.client_factory(
                     api_key=api_key,

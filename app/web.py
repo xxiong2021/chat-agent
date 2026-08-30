@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 from app.core.auth import UserStore
 from app.core.config import ConfigStore
-from app.llm.router import LLMRouter
+from app.agent.web_agent import run_agent
 from app.resources.registry import RESOURCE_CATALOG
 
 load_dotenv()
@@ -205,7 +205,7 @@ def chat(request: Request, message: str = Form()):
     history = chat_history.setdefault(user["username"], [])
     history.append({"role": "user", "content": text})
     try:
-        reply = LLMRouter().complete(history).choices[0].message.content or ""
+        reply = run_agent(f"web:{user['username']}", history, config_store.load())
     except RuntimeError:
         history.pop()
         return JSONResponse(
