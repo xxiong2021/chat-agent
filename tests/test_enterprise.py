@@ -20,12 +20,29 @@ def test_config_store_and_local_first_fallback(tmp_path, monkeypatch):
     saved = config.load(); saved["llm"]["api_enabled"] = True; config.save(saved)
     monkeypatch.setenv("API_LLM_KEY", "key")
     calls = []
-    def factory(api_key, base_url):
-        calls.append((api_key, base_url))
+    def factory(api_key, base_url, timeout):
+        calls.append((api_key, base_url, timeout))
         if api_key == "ollama": raise RuntimeError("offline")
         return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=lambda **_: "api-result")))
     assert LLMRouter(config, factory).complete([{"role": "user", "content": "hi"}]) == "api-result"
     assert calls[0][0] == "ollama" and calls[1][0] == "key"
+
+
+def test_local_llm_disables_thinking_and_uses_timeout(tmp_path):
+    config = ConfigStore(tmp_path / "config.json")
+    requests = []
+
+    def factory(**kwargs):
+        return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(
+            create=lambda **request: requests.append(request) or "local-result"
+        )))
+
+    assert LLMRouter(config, factory, timeout_seconds=75).complete([]) == "local-result"
+    assert requests == [{
+        "model": "qwen3:8b",
+        "messages": [],
+        "extra_body": {"think": False},
+    }]
 
 
 def test_login_and_admin_configuration(tmp_path, monkeypatch):
@@ -36,3 +53,23 @@ def test_login_and_admin_configuration(tmp_path, monkeypatch):
     assert client.get("/").status_code == 200
     assert client.post("/login", data={"username": "admin", "password": "correct-horse-battery"}).status_code == 200
     assert client.get("/admin/config").status_code == 200
+
+
+def test_chat_returns_readable_error_when_model_is_unavailable(tmp_path, monkeypatch):
+    from app import web
+
+    store = UserStore(tmp_path / "users.db")
+    store.create_user("admin", "correct-horse-battery", "admin")
+    monkeypatch.setattr(web, "users", store)
+
+    class UnavailableRouter:
+        def complete(self, messages):
+            raise RuntimeError("Ollama offline")
+
+    monkeypatch.setattr(web, "LLMRouter", UnavailableRouter)
+    client = TestClient(web.app)
+    client.post("/login", data={"username": "admin", "password": "correct-horse-battery"})
+
+    response = client.post("/api/chat", data={"message": "hello"})
+    assert response.status_code == 200
+    assert "模型暂时不可用" in response.text

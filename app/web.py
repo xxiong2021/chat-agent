@@ -60,7 +60,10 @@ def dashboard(request: Request):
 @app.post("/api/chat", response_class=HTMLResponse)
 def chat(request: Request, message: str = Form()):
     if not current_user(request): raise HTTPException(401, "请先登录")
-    reply = LLMRouter().complete([{"role": "user", "content": message}]).choices[0].message.content or ""
+    try:
+        reply = LLMRouter().complete([{"role": "user", "content": message}]).choices[0].message.content or ""
+    except RuntimeError:
+        return page("模型暂时不可用", "<h1>模型暂时不可用</h1><p>请确认本地 Ollama 服务和已配置模型可用；若需要，也可由管理员在配置页启用 API 回退。</p><a href='/'>返回</a>")
     return page("回复", f"<p>{escape(reply)}</p><a href='/'>返回</a>")
 
 @app.get("/admin/config", response_class=HTMLResponse)
