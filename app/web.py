@@ -5,10 +5,14 @@ from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
+from dotenv import load_dotenv
+
 from app.core.auth import UserStore
 from app.core.config import ConfigStore
 from app.llm.router import LLMRouter
 from app.resources.registry import RESOURCE_CATALOG
+
+load_dotenv()
 
 app = FastAPI(title="Company Agent")
 app.add_middleware(
