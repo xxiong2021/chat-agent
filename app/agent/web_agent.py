@@ -295,11 +295,15 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
 
         for tc in tool_calls:
             name = tc.function.name
-            try:
-                arguments = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                llm_messages.append({"role": "tool", "tool_call_id": tc.id, "content": "工具参数格式错误，无法执行。"})
-                continue
+            raw_args = tc.function.arguments
+            if isinstance(raw_args, dict):
+                arguments = raw_args
+            else:
+                try:
+                    arguments = json.loads(raw_args or "{}")
+                except json.JSONDecodeError:
+                    llm_messages.append({"role": "tool", "tool_call_id": tc.id, "content": "工具参数格式错误，无法执行。"})
+                    continue
 
             if permission_manager.requires_confirmation(name):
                 return create_pending_action(user_id, name, arguments)
