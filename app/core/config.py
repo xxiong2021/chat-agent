@@ -3,7 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 
 CONFIG_FILE = Path(__file__).resolve().parents[2] / "data" / "company_config.json"
-DEFAULT_CONFIG = {"llm": {"provider": "local", "local_base_url": "http://127.0.0.1:11434/v1", "local_model": "qwen3:8b", "api_enabled": False, "api_base_url": "https://api.deepseek.com", "api_model": "deepseek-chat"}, "resources": {"files": {"enabled": True, "root": "."}, "web_search": {"enabled": False}, "email": {"enabled": False}, "crm": {"enabled": False}, "website": {"enabled": False}}}
+DEFAULT_CONFIG = {"llm": {"provider": "local", "local_base_url": "http://127.0.0.1:11434/v1", "local_model": "qwen3:0.6b", "api_enabled": False, "api_base_url": "https://api.deepseek.com", "api_model": "deepseek-chat"}, "resources": {"files": {"enabled": True, "root": "."}, "web_search": {"enabled": False}, "email": {"enabled": False}, "crm": {"enabled": False}, "website": {"enabled": False}}}
 
 class ConfigStore:
     def __init__(self, path: Path = CONFIG_FILE): self.path = path
