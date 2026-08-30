@@ -1,4 +1,5 @@
 import json
+import re
 
 from app.agent.permissions import PermissionManager
 from app.llm.router import LLMRouter
@@ -164,7 +165,7 @@ def build_tools(config: dict):
             web_search = None
         if web_search:
             schemas.append(TOOL_SCHEMAS["web_search"])
-            functions["web_search"] = web_search
+            functions.setdefault("web_search", web_search)
         else:
             functions.pop("web_search", None)
     else:
@@ -246,9 +247,183 @@ def execute_pending_action(user_id: str, functions: dict) -> str:
     return str(result)
 
 
+# ============================================================
+# 确定性意图检测（小模型工具调用不稳定时的兜底）
+# ============================================================
+
+def looks_like_file_write_request(message: str) -> bool:
+    text = message.strip().lower()
+    write_keywords = [
+        "创建文件", "新建文件", "建立文件", "写入文件", "修改文件", "编辑文件",
+        "保存文件", "覆盖文件", "写文件", "创建一个文件", "新建一个文件",
+        "帮我创建", "帮我新建", "帮我写入", "帮我修改", "帮我编辑",
+        "create file", "new file", "write file", "modify file", "edit file", "save file",
+    ]
+    return any(keyword in text for keyword in write_keywords)
+
+
+def extract_file_write_arguments(message: str):
+    text = message.strip()
+
+    # 支持“创建 test.txt，内容是 hello”这类说法（不强制带“文件”二字）
+    m = re.search(
+        r"(?:创建|新建|写入|生成|建立)\s*(?:文件)?\s*([\w./\\-]+\.\w+)\s*[，,]\s*(?:内容是|内容为|内容：|内容)\s*(.+)",
+        text,
+    )
+    if m:
+        return {"path": m.group(1), "content": m.group(2).strip()}
+
+    path = None
+    markers = ["创建文件", "新建文件", "建立文件", "创建一个文件", "新建一个文件"]
+    for marker in markers:
+        if marker not in text:
+            continue
+        after = text.split(marker, 1)[1].strip()
+        after = after.lstrip(" ：:，,")
+        if after.startswith("在项目根目录"):
+            after = after[len("在项目根目录"):].strip(" ：:，，")
+        content_markers = [
+            "，内容是", ",内容是", "，内容为", ",内容为", " 内容是", " 内容为",
+            "，内容：", ",内容:", "，内容", ",内容",
+        ]
+        filename_part = after
+        content_part = None
+        for cm in content_markers:
+            if cm in after:
+                filename_part, content_part = after.split(cm, 1)
+                break
+        filename_part = filename_part.strip(" `\"'“”‘’")
+        if filename_part.endswith("文件"):
+            filename_part = filename_part[:-2].strip()
+        if filename_part:
+            path = filename_part
+        if content_part is not None:
+            content = content_part.strip().strip(" ：:,")
+            return {"path": path, "content": content}
+        break
+    return None
+
+
+def looks_like_file_delete_request(message: str) -> bool:
+    text = message.strip().lower()
+    delete_keywords = [
+        "删除文件", "删除一个文件", "删掉文件", "删掉一个文件", "删除", "删掉",
+        "移除文件", "移除一个文件", "移除", "把文件删除", "把文件删掉",
+        "delete file", "remove file", "delete", "remove",
+    ]
+    return any(keyword in text for keyword in delete_keywords)
+
+
+def extract_file_path_for_delete(message: str):
+    text = message.strip()
+    prefixes = [
+        "在项目根目录下", "在项目根目录", "项目根目录下", "项目根目录中", "项目根目录里",
+        "根目录下", "根目录中", "根目录里",
+    ]
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip(" ：:，,。")
+            break
+    patterns = [
+        "删除文件", "删掉文件", "移除文件", "删除一个文件", "删掉一个文件", "移除一个文件",
+        "删除", "删掉", "移除", "delete file", "remove file", "delete", "remove",
+    ]
+    path = None
+    for pattern in patterns:
+        if pattern not in text:
+            continue
+        before, after = text.split(pattern, 1)
+        after = after.strip(" ：:，,。")
+        if not after and before.strip():
+            candidate = before.strip()
+            if candidate.startswith("把"):
+                candidate = candidate[1:].strip()
+        else:
+            candidate = after
+        candidate = candidate.strip(" `\"'“”‘’").replace("文件：", "").strip()
+        if candidate.endswith("文件"):
+            candidate = candidate[:-2].strip()
+        candidate = candidate.rstrip(" 。！？!?,，；;").strip()
+        if candidate:
+            path = candidate
+            break
+    if not path:
+        return None
+    invalid_fragments = ["吗", "可以吗", "能否", "帮我", "请", "然后"]
+    for fragment in invalid_fragments:
+        if fragment in path:
+            return None
+    return {"path": path}
+
+
+def detect_file_list_request(message: str):
+    text = message.strip()
+    if not re.search(r"(列出|列举|有什么文件|有哪些文件|目录里有什么|目录中有什么|查看目录|显示目录)", text):
+        return None
+    return {"path": "."}
+
+
+def detect_file_read_request(message: str):
+    text = message.strip()
+    m = re.search(r"(?:读取|读一下|打开|看看|查看)\s*(?:文件)?\s*([\w./\\-]+\.\w+)", text)
+    if not m:
+        return None
+    return {"path": m.group(1)}
+
+
+def detect_web_search_request(message: str):
+    text = message.strip()
+    m = re.search(r"(?:搜索|搜一下|查一下|查找|搜)\s*(?:关于)?\s*(.+?)[。！？!?.]*$", text)
+    if not m:
+        return None
+    query = m.group(1).strip()
+    if len(query) < 2:
+        return None
+    return {"query": query}
+
+
+def format_tool_result(name: str, arguments: dict, result) -> str:
+    if isinstance(result, dict) and result.get("success") is False:
+        return f"操作失败：{result.get('error', '未知错误')}"
+    if name == "file_list":
+        items = result.get("items", []) if isinstance(result, dict) else []
+        if not items:
+            return "目录为空。"
+        lines = [f"- {it['name']}/" if it.get("type") == "directory" else f"- {it['name']}" for it in items]
+        return "项目目录内容：\n" + "\n".join(lines)
+    if name == "file_read":
+        content = result.get("content", "") if isinstance(result, dict) else str(result)
+        return f"文件 {arguments.get('path', '')} 内容：\n{content}"
+    if name == "web_search":
+        results = result.get("results", []) if isinstance(result, dict) else []
+        if not results:
+            return f"没有找到与“{arguments.get('query', '')}”相关的结果。"
+        lines = []
+        for r in results[:5]:
+            lines.append(f"- {r.get('title', '')}\n  {r.get('url', '')}\n  {r.get('content', '')[:200]}")
+        return "搜索结果：\n" + "\n".join(lines)
+    if isinstance(result, (dict, list)):
+        return json.dumps(result, ensure_ascii=False, indent=2)
+    return str(result)
+
+
+def run_auto_tool(user_id: str, name: str, arguments: dict, functions: dict) -> str:
+    function = functions.get(name)
+    if not function:
+        return f"工具 {name} 当前不可用。"
+    try:
+        result = function(**arguments)
+    except Exception as e:
+        return f"工具执行失败：{e}"
+    return format_tool_result(name, arguments, result)
+
+
 def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
-    """Web Agent 主入口：多轮工具调用 + 权限确认。"""
+    """Web Agent 主入口：意图检测 + 多轮工具调用 + 权限确认。"""
     tools, functions = build_tools(config)
+    resources = config.get("resources", {})
+    files_enabled = resources.get("files", {}).get("enabled", True)
+    web_enabled = resources.get("web_search", {}).get("enabled", False)
 
     pending = permission_manager.get_pending_action(user_id)
     if pending:
@@ -267,6 +442,27 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
             f"请回复“确认 {pending['confirmation_token']}”执行，或回复“取消”放弃。"
         )
 
+    # ---------------- 确定性意图检测兜底 ----------------
+    last_text = messages[-1]["content"] if messages else ""
+    if files_enabled:
+        write_args = extract_file_write_arguments(last_text)
+        if write_args:
+            return create_pending_action(user_id, "file_write", write_args)
+        delete_args = extract_file_path_for_delete(last_text)
+        if delete_args:
+            return create_pending_action(user_id, "file_delete", delete_args)
+        list_args = detect_file_list_request(last_text)
+        if list_args:
+            return run_auto_tool(user_id, "file_list", list_args, functions)
+        read_args = detect_file_read_request(last_text)
+        if read_args:
+            return run_auto_tool(user_id, "file_read", read_args, functions)
+    if web_enabled:
+        search_args = detect_web_search_request(last_text)
+        if search_args:
+            return run_auto_tool(user_id, "web_search", search_args, functions)
+
+    # ---------------- LLM 多轮工具调用 ----------------
     llm_messages = [{"role": "system", "content": SYSTEM_PROMPT}, *messages]
 
     for _round in range(1, 9):
