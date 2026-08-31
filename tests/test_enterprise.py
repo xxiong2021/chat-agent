@@ -63,13 +63,14 @@ def test_chat_returns_readable_error_when_model_is_unavailable(tmp_path, monkeyp
     monkeypatch.setattr(web, "users", store)
 
     class UnavailableRouter:
-        def complete(self, messages):
+        def complete(self, user_id, messages, config):
             raise RuntimeError("Ollama offline")
 
-    monkeypatch.setattr(web, "LLMRouter", UnavailableRouter)
+    monkeypatch.setattr(web, "run_agent", UnavailableRouter().complete)
     client = TestClient(web.app)
+    client.cookies.set("lang", "zh")
     client.post("/login", data={"username": "admin", "password": "correct-horse-battery"})
 
     response = client.post("/api/chat", data={"message": "hello"})
-    assert response.status_code == 200
+    assert response.status_code == 503
     assert "模型暂时不可用" in response.text

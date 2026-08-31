@@ -1,5 +1,6 @@
 import os
 from html import escape
+from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -26,6 +27,96 @@ config_store = ConfigStore()
 chat_history: dict[str, list[dict]] = {}
 MAX_HISTORY = 30
 
+I18N = {
+    "en": {
+        "lang_name": "EN",
+        "lang_other_name": "中文",
+        "title": "Company Agent",
+        "login_title": "Sign in",
+        "login_failed": "Sign-in failed",
+        "login_failed_msg": "Incorrect username or password.",
+        "retry": "Try again",
+        "username": "Username",
+        "password": "Password",
+        "login": "Sign in",
+        "logout": "Sign out",
+        "welcome": "Welcome, {user}",
+        "admin_config": "Admin settings",
+        "available_resources": "Available resources",
+        "input_placeholder": "Type a message, Enter to send",
+        "send": "Send",
+        "thinking": "Thinking…",
+        "request_failed": "Request failed: ",
+        "enabled": "Enabled",
+        "disabled": "Disabled",
+        "config_title": "Admin settings",
+        "local_base_url": "Local base URL",
+        "local_model": "Local model",
+        "api_fallback": "API fallback (key read from environment variable API_LLM_KEY)",
+        "save": "Save",
+        "back": "Back",
+        "login_required": "Sign in required",
+        "empty_message": "Message cannot be empty.",
+        "model_unavailable": "The model is temporarily unavailable. Check that the local Ollama service and the configured model are running; if needed, an admin can enable API fallback on the settings page.",
+    },
+    "zh": {
+        "lang_name": "中文",
+        "lang_other_name": "EN",
+        "title": "Company Agent",
+        "login_title": "登录",
+        "login_failed": "登录失败",
+        "login_failed_msg": "账号或密码错误。",
+        "retry": "重试",
+        "username": "账号",
+        "password": "密码",
+        "login": "登录",
+        "logout": "退出",
+        "welcome": "欢迎，{user}",
+        "admin_config": "管理配置",
+        "available_resources": "可用资源",
+        "input_placeholder": "输入消息，Enter 发送",
+        "send": "发送",
+        "thinking": "正在思考…",
+        "request_failed": "请求失败：",
+        "enabled": "启用",
+        "disabled": "关闭",
+        "config_title": "管理配置",
+        "local_base_url": "本地地址",
+        "local_model": "本地模型",
+        "api_fallback": "API 回退（密钥使用环境变量 API_LLM_KEY）",
+        "save": "保存",
+        "back": "返回",
+        "login_required": "请先登录",
+        "empty_message": "消息不能为空",
+        "model_unavailable": "模型暂时不可用。请确认本地 Ollama 服务和已配置模型可用；若需要，也可由管理员在配置页启用 API 回退。",
+    },
+}
+
+
+def get_lang(request: Request) -> str:
+    lang = request.cookies.get("lang", "en")
+    return lang if lang in I18N else "en"
+
+
+def lang_link(request: Request) -> str:
+    lang = get_lang(request)
+    other = "zh" if lang == "en" else "en"
+    name = I18N[other]["lang_name"]
+    next_path = request.url.path
+    params = {k: v for k, v in request.query_params.items() if k != "lang"}
+    if params:
+        next_path += "?" + urlencode(params)
+    next_enc = quote(next_path, safe="")
+    return f"<a class='lang-switch' href='/set-lang?lang={other}&amp;next={next_enc}'>{name}</a>"
+
+
+def language_switcher(request: Request) -> str:
+    return (
+        "<span class='lang-box'>"
+        + lang_link(request)
+        + "</span>"
+    )
+
 
 def get_users() -> UserStore:
     global users
@@ -45,13 +136,16 @@ def require_admin(request: Request):
     return user
 
 
-def page(title: str, body: str) -> HTMLResponse:
+def page(request: Request, title: str, body: str) -> HTMLResponse:
+    lang = get_lang(request)
+    switch = language_switcher(request)
     return HTMLResponse(
         f"<!doctype html><meta charset='utf-8'><title>{title}</title>"
         f"<style>body{{max-width:920px;margin:40px auto;font:16px system-ui}} "
         f"input,select,textarea{{width:100%;padding:8px;margin:5px 0}}"
-        f"button{{padding:8px 14px}} .card{{border:1px solid #ddd;padding:16px;margin:12px 0}}</style>"
-        f"{body}"
+        f"button{{padding:8px 14px}} .card{{border:1px solid #ddd;padding:16px;margin:12px 0}}"
+        f".lang-switch{{color:#2563eb;text-decoration:none;font-size:14px}} .lang-switch:hover{{text-decoration:underline}}</style>"
+        f"<div style='text-align:right;margin-bottom:8px'>{switch}</div>{body}"
     )
 
 
@@ -63,6 +157,9 @@ header{background:#fff;border-bottom:1px solid #d7dbe0;padding:10px 20px;display
 header .brand{font-weight:600}
 header nav{display:flex;align-items:center;gap:12px;font-size:14px}
 header form{display:inline;margin:0}
+.lang-box{margin-left:4px}
+.lang-switch{color:#2563eb;text-decoration:none}
+.lang-switch:hover{text-decoration:underline}
 main{flex:1;overflow-y:auto;padding:20px;max-width:900px;width:100%;margin:0 auto;display:flex;flex-direction:column;gap:10px}
 .msg{max-width:75%;padding:10px 14px;border-radius:14px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
 .msg.user{align-self:flex-end;background:#2563eb;color:#fff;border-bottom-right-radius:4px}
@@ -100,13 +197,21 @@ async function loadHistory(){
   main.innerHTML='';
   (data.messages||[]).forEach(m=>addMsg(m.role,m.content));
 }
+function sendMsg(role,text){
+  const d=document.createElement('div');
+  d.className='msg '+role;
+  d.textContent=text;
+  main.appendChild(d);
+  main.scrollTop=main.scrollHeight;
+  return d;
+}
 form.addEventListener('submit',async function(e){
   e.preventDefault();
   const text=input.value.trim();
   if(!text)return;
   input.value='';
   addMsg('user',text);
-  const typing=addMsg('assistant','正在思考…');
+  const typing=sendMsg('assistant','__THINKING__');
   sendBtn.disabled=true;
   try{
     const r=await fetch('/api/chat',{
@@ -124,7 +229,7 @@ form.addEventListener('submit',async function(e){
     }
   }catch(err){
     typing.remove();
-    addMsg('error','请求失败：'+err.message);
+    addMsg('error','__REQUEST_FAILED__'+err.message);
   }
   sendBtn.disabled=false;
   input.focus();
@@ -135,33 +240,49 @@ input.focus();
 """
 
 
-def chat_page(user: dict, resources_html: str) -> HTMLResponse:
-    admin = "<a href='/admin/config'>管理配置</a>" if user["role"] == "admin" else ""
+def chat_page(request: Request, user: dict, resources_html: str) -> HTMLResponse:
+    lang = get_lang(request)
+    t = I18N[lang]
+    admin = f"<a href='/admin/config'>{escape(t['admin_config'])}</a>" if user["role"] == "admin" else ""
+    script = (
+        CHAT_SCRIPT.replace("__THINKING__", t["thinking"])
+        .replace("__REQUEST_FAILED__", t["request_failed"])
+    )
     body = (
         CHAT_STYLE
         + "<header><span class='brand'>Company Agent</span><nav>"
-        + "<span>欢迎，" + escape(user["username"]) + "</span>"
+        + "<span>" + escape(t["welcome"].format(user=user["username"])) + "</span>"
         + admin
-        + "<form method='post' action='/logout'><button>退出</button></form>"
+        + "<form method='post' action='/logout'><button>" + escape(t["logout"]) + "</button></form>"
+        + language_switcher(request)
         + "</nav></header>"
         + "<main id='messages'></main>"
-        + "<details><summary>可用资源</summary>" + resources_html + "</details>"
-        + "<footer><form id='chat-form'><input id='message' autocomplete='off' placeholder='输入消息，Enter 发送'><button id='send'>发送</button></form></footer>"
-        + CHAT_SCRIPT
+        + "<details><summary>" + escape(t["available_resources"]) + "</summary>" + resources_html + "</details>"
+        + "<footer><form id='chat-form'><input id='message' autocomplete='off' placeholder='" + escape(t["input_placeholder"]) + "'><button id='send'>" + escape(t["send"]) + "</button></form></footer>"
+        + script
     )
     return HTMLResponse("<!doctype html><meta charset='utf-8'><title>Company Agent</title>" + body)
 
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page():
-    return page("登录", "<h1>Company Agent</h1><form method='post'><input name='username' placeholder='账号'><input name='password' type='password' placeholder='密码'><button>登录</button></form>")
+def login_page(request: Request):
+    t = I18N[get_lang(request)]
+    return page(
+        request,
+        t["login_title"],
+        "<h1>Company Agent</h1>"
+        f"<form method='post'><input name='username' placeholder='{t['username']}' autocomplete='username'>"
+        f"<input name='password' type='password' placeholder='{t['password']}' autocomplete='current-password'>"
+        f"<button>{t['login']}</button></form>",
+    )
 
 
 @app.post("/login")
 def login(request: Request, username: str = Form(), password: str = Form()):
+    t = I18N[get_lang(request)]
     user = get_users().authenticate(username, password)
     if not user:
-        return page("登录失败", "<p>账号或密码错误。</p><a href='/login'>重试</a>")
+        return page(request, t["login_failed"], f"<p>{t['login_failed_msg']}</p><a href='/login'>{t['retry']}</a>")
     request.session["user"] = user
     return RedirectResponse("/", status_code=303)
 
@@ -172,35 +293,51 @@ def logout(request: Request):
     return RedirectResponse("/login", status_code=303)
 
 
+@app.get("/set-lang")
+def set_lang(request: Request, lang: str = "en", next: str = "/"):
+    if lang not in I18N:
+        lang = "en"
+    target = "/"
+    if next.startswith("/") and not next.startswith("//"):
+        target = next.split("?")[0] or "/"
+    response = RedirectResponse(target, status_code=303)
+    response.set_cookie("lang", lang, max_age=31536000, httponly=True, samesite="lax")
+    return response
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
+    lang = get_lang(request)
+    t = I18N[lang]
     resources = config_store.load()["resources"]
     cards = "".join(
-        f"<div class='card'><b>{item['label']}</b> — {'启用' if resources[key]['enabled'] else '关闭'}<br>{item['description']}</div>"
+        f"<div class='card'><b>{escape(item.get('label_en') if lang == 'en' else item['label'])}</b> — {escape(t['enabled'] if resources[key]['enabled'] else t['disabled'])}<br>{escape(item.get('description_en') if lang == 'en' else item['description'])}</div>"
         for key, item in RESOURCE_CATALOG.items()
     )
-    return chat_page(user, cards)
+    return chat_page(request, user, cards)
 
 
 @app.get("/api/history")
 def api_history(request: Request):
+    t = I18N[get_lang(request)]
     user = current_user(request)
     if not user:
-        raise HTTPException(401, "请先登录")
+        raise HTTPException(401, t["login_required"])
     return {"messages": chat_history.get(user["username"], [])}
 
 
 @app.post("/api/chat")
 def chat(request: Request, message: str = Form()):
+    t = I18N[get_lang(request)]
     user = current_user(request)
     if not user:
-        raise HTTPException(401, "请先登录")
+        raise HTTPException(401, t["login_required"])
     text = message.strip()
     if not text:
-        return JSONResponse({"error": "消息不能为空"}, status_code=400)
+        return JSONResponse({"error": t["empty_message"]}, status_code=400)
 
     history = chat_history.setdefault(user["username"], [])
     history.append({"role": "user", "content": text})
@@ -209,7 +346,7 @@ def chat(request: Request, message: str = Form()):
     except RuntimeError:
         history.pop()
         return JSONResponse(
-            {"error": "模型暂时不可用。请确认本地 Ollama 服务和已配置模型可用；若需要，也可由管理员在配置页启用 API 回退。"},
+            {"error": t["model_unavailable"]},
             status_code=503,
         )
     history.append({"role": "assistant", "content": reply})
@@ -221,13 +358,23 @@ def chat(request: Request, message: str = Form()):
 @app.get("/admin/config", response_class=HTMLResponse)
 def config_page(request: Request):
     require_admin(request)
+    lang = get_lang(request)
+    t = I18N[lang]
     config = config_store.load()
     llm = config["llm"]
     toggles = "".join(
-        f"<label><input type='checkbox' name='{key}' {'checked' if config['resources'][key]['enabled'] else ''}>{item['label']}</label><br>"
+        f"<label><input type='checkbox' name='{key}' {'checked' if config['resources'][key]['enabled'] else ''}>{escape(item.get('label_en') if lang == 'en' else item['label'])}</label><br>"
         for key, item in RESOURCE_CATALOG.items()
     )
-    return page("管理配置", f"<h1>管理配置</h1><form method='post'><label>本地地址<input name='local_base_url' value='{escape(llm['local_base_url'])}'></label><label>本地模型<input name='local_model' value='{escape(llm['local_model'])}'></label><label><input type='checkbox' name='api_enabled' {'checked' if llm['api_enabled'] else ''}>API 回退（密钥使用环境变量 API_LLM_KEY）</label>{toggles}<button>保存</button></form><p><a href='/'>返回</a></p>")
+    return page(
+        request,
+        t["config_title"],
+        f"<h1>{t['config_title']}</h1><form method='post'>"
+        f"<label>{t['local_base_url']}<input name='local_base_url' value='{escape(llm['local_base_url'])}'></label>"
+        f"<label>{t['local_model']}<input name='local_model' value='{escape(llm['local_model'])}'></label>"
+        f"<label><input type='checkbox' name='api_enabled' {'checked' if llm['api_enabled'] else ''}>{escape(t['api_fallback'])}</label>"
+        f"{toggles}<button>{t['save']}</button></form><p><a href='/'>{t['back']}</a></p>",
+    )
 
 
 @app.post("/admin/config")
