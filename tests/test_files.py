@@ -31,3 +31,18 @@ def test_file_tools_reject_and_hide_sensitive_files(project_root):
 
     names = [item["name"] for item in files.file_list()["items"]]
     assert names == ["visible.txt"]
+
+
+def test_file_tools_respect_configured_root(project_root, monkeypatch):
+    work = project_root / "work"
+    (work / "notes").mkdir(parents=True)
+    (work / "notes" / "todo.txt").write_text("buy milk", encoding="utf-8")
+
+    files.set_root(str(work))
+    assert files.file_read("notes/todo.txt")["content"] == "buy milk"
+    assert files.file_list("notes")["items"] == [
+        {"name": "todo.txt", "type": "file"}
+    ]
+
+    with pytest.raises(PermissionError):
+        files.file_read("../outside.txt")

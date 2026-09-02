@@ -4,21 +4,46 @@
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _safe_path(path: str) -> Path:
+def set_root(root: str | Path | None) -> None:
+    """设置文件工具的工作根目录（由管理配置驱动）。"""
+    global PROJECT_ROOT
+    if root is None or str(root).strip() == "":
+        return
+    raw = Path(str(root)).expanduser()
+    candidate = raw if raw.is_absolute() else (PROJECT_ROOT / raw)
+    candidate = candidate.resolve()
+    if not candidate.is_dir():
+        raise ValueError(f"目录不存在：{candidate}")
+    PROJECT_ROOT = candidate
+
+
+def _safe_path(path: str, root: Path | None = None) -> Path:
     """
     将用户提供的路径限制在项目目录内。
     """
 
-    target = (PROJECT_ROOT / path).resolve()
+    if root is not None:
+        raw_root = Path(root).expanduser()
+        base = raw_root if raw_root.is_absolute() else (PROJECT_ROOT / raw_root)
+    else:
+        base = PROJECT_ROOT
+    base = base.resolve()
+
+    if path.startswith("/") or (len(path) > 1 and path[1] == ":"):
+        raise PermissionError(
+            "禁止使用绝对路径。"
+        )
+
+    target = (base / path).resolve()
 
     try:
-        target.relative_to(PROJECT_ROOT)
+        target.relative_to(base)
     except ValueError:
         raise PermissionError(
             "禁止访问项目目录之外的文件。"
         )
 
-    relative_parts = target.relative_to(PROJECT_ROOT).parts
+    relative_parts = target.relative_to(base).parts
     if any(part.startswith(".") for part in relative_parts):
         raise PermissionError(
             "禁止访问隐藏或敏感文件。"
@@ -27,12 +52,12 @@ def _safe_path(path: str) -> Path:
     return target
 
 
-def file_list(path: str = ".") -> dict:
+def file_list(path: str = ".", _root: Path | None = None) -> dict:
     """
     列出目录内容。
     """
 
-    target = _safe_path(path)
+    target = _safe_path(path, _root)
 
     if not target.exists():
         return {
@@ -71,12 +96,12 @@ def file_list(path: str = ".") -> dict:
     }
 
 
-def file_read(path: str) -> dict:
+def file_read(path: str, _root: Path | None = None) -> dict:
     """
     读取文本文件。
     """
 
-    target = _safe_path(path)
+    target = _safe_path(path, _root)
 
     if not target.exists():
         return {
@@ -113,12 +138,13 @@ def file_read(path: str) -> dict:
 def file_write(
     path: str,
     content: str,
+    _root: Path | None = None,
 ) -> dict:
     """
     写入文本文件。
     """
 
-    target = _safe_path(path)
+    target = _safe_path(path, _root)
 
     target.parent.mkdir(
         parents=True,
@@ -144,12 +170,12 @@ def file_write(
     }
 
 
-def file_delete(path: str) -> dict:
+def file_delete(path: str, _root: Path | None = None) -> dict:
     """
     删除项目目录内的文件。
     """
 
-    target = _safe_path(path)
+    target = _safe_path(path, _root)
 
     if not target.exists():
         return {

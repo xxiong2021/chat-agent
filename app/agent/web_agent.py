@@ -2,9 +2,10 @@ import json
 import re
 
 from app.agent.permissions import PermissionManager
+from app.core.config import ConfigStore
 from app.llm.router import LLMRouter
 from app.tools.calculator import calculator
-from app.tools.files import file_delete, file_list, file_read, file_write
+from app.tools.files import file_delete, file_list, file_read, file_write, set_root
 
 
 SYSTEM_PROMPT = """
@@ -58,6 +59,16 @@ TOOL_FUNCTIONS = {
     "file_write": file_write,
     "file_delete": file_delete,
 }
+
+
+class _RuntimeConfig(ConfigStore):
+    """让 LLMRouter 直接使用当前请求的管理配置，而不是重读磁盘。"""
+
+    def __init__(self, config: dict):
+        self._config = config
+
+    def load(self) -> dict:
+        return self._config
 
 
 TOOL_SCHEMAS = {
@@ -451,9 +462,16 @@ def run_auto_tool(user_id: str, name: str, arguments: dict, functions: dict) -> 
 
 def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
     """Web Agent 主入口：意图检测 + 多轮工具调用 + 权限确认。"""
+    files_config = config.get("resources", {}).get("files", {})
+    configured_root = files_config.get("root")
+    if configured_root:
+        try:
+            set_root(configured_root)
+        except (ValueError, OSError):
+            pass
     tools, functions = build_tools(config)
     resources = config.get("resources", {})
-    files_enabled = resources.get("files", {}).get("enabled", True)
+    files_enabled = files_config.get("enabled", True)
     web_enabled = resources.get("web_search", {}).get("enabled", False)
 
     pending = permission_manager.get_pending_action(user_id)
@@ -521,7 +539,7 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
     llm_messages = [{"role": "system", "content": system_prompt}, *messages]
 
     for _round in range(1, 9):
-        response = LLMRouter().complete(llm_messages, tools=tools)
+        response = LLMRouter(config_store=_RuntimeConfig(config)).complete(llm_messages, tools=tools)
         assistant = response.choices[0].message
         tool_calls = getattr(assistant, "tool_calls", None)
 

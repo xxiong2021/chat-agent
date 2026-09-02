@@ -22,7 +22,8 @@ class LLMRouter:
 
     def _candidates(self):
         settings = self.config_store.load()["llm"]
-        yield "local", settings["local_base_url"], "ollama", settings["local_model"]
+        if settings.get("local_enabled", True):
+            yield "local", settings["local_base_url"], "ollama", settings["local_model"]
 
         api_key = os.getenv("API_LLM_KEY") or os.getenv("LLM_API_KEY")
         if settings.get("api_enabled") and api_key:

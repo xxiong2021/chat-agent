@@ -1,6 +1,9 @@
 import os
 from html import escape
+from pathlib import Path
 from urllib.parse import quote, urlencode
+
+import httpx
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -27,6 +30,24 @@ config_store = ConfigStore()
 chat_history: dict[str, list[dict]] = {}
 MAX_HISTORY = 30
 
+LOCAL_MODELS = [
+    "qwen3:0.6b",
+    "qwen3:4b",
+    "qwen3:8b",
+    "qwen3:14b",
+    "qwen2.5:7b",
+    "llama3.1:8b",
+]
+
+API_MODELS = [
+    "deepseek-chat",
+    "deepseek-reasoner",
+    "gpt-4o-mini",
+    "gpt-4o",
+    "gpt-4.1-mini",
+    "gpt-4.1",
+]
+
 I18N = {
     "en": {
         "lang_name": "EN",
@@ -50,8 +71,16 @@ I18N = {
         "enabled": "Enabled",
         "disabled": "Disabled",
         "config_title": "Admin settings",
+        "local_section": "Local models",
+        "api_section": "Use API models",
         "local_base_url": "Local base URL",
         "local_model": "Local model",
+        "local_model_list": "Local model",
+        "api_model": "API model",
+        "api_base_url": "API base URL",
+        "files_root": "Local working directory",
+        "files_root_hint": "Absolute path on the server, or a path relative to the project root. Used by file tools.",
+        "model_hint": "Pick from the list or type a custom model name.",
         "api_fallback": "API fallback (key read from environment variable API_LLM_KEY)",
         "save": "Save",
         "back": "Back",
@@ -81,8 +110,16 @@ I18N = {
         "enabled": "启用",
         "disabled": "关闭",
         "config_title": "管理配置",
+        "local_section": "本地模型",
+        "api_section": "使用 API 模型",
         "local_base_url": "本地地址",
         "local_model": "本地模型",
+        "local_model_list": "本地模型",
+        "api_model": "API 模型",
+        "api_base_url": "API 地址",
+        "files_root": "本地可操作目录",
+        "files_root_hint": "服务器上的绝对路径，或相对项目根目录的路径；文件工具以此为根。",
+        "model_hint": "从列表选择，或直接输入自定义模型名。",
         "api_fallback": "API 回退（密钥使用环境变量 API_LLM_KEY）",
         "save": "保存",
         "back": "返回",
@@ -118,6 +155,48 @@ def language_switcher(request: Request) -> str:
     )
 
 
+def ollama_models(base_url: str, timeout: float = 2.0) -> list[str]:
+    """查询 Ollama 实际安装的模型列表；失败时返回空列表。"""
+    if not base_url:
+        return []
+    api_url = base_url.replace("/v1", "").rstrip("/") + "/api/tags"
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(api_url)
+            resp.raise_for_status()
+            return sorted(
+                m.get("name", "")
+                for m in resp.json().get("models", [])
+                if m.get("name")
+            )
+    except Exception:
+        return []
+
+
+def model_datalist(
+    datalist_id: str,
+    current: str,
+    models: list[str],
+    extra: list[str] | None = None,
+) -> str:
+    """生成可输入也可选择的模型输入框 + datalist 提示。"""
+    candidates = list(models)
+    for m in (extra or []):
+        if m and m not in candidates:
+            candidates.append(m)
+    if current and current not in candidates:
+        candidates.insert(0, current)
+    options = "".join(
+        f"<option value='{escape(m)}'>{escape(m)}</option>"
+        for m in candidates
+    )
+    return (
+        f"<input id='{datalist_id}' name='{datalist_id}' list='{datalist_id}-list' "
+        f"value='{escape(current)}' autocomplete='off'>"
+        f"<datalist id='{datalist_id}-list'>{options}</datalist>"
+    )
+
+
 def get_users() -> UserStore:
     global users
     if users is None:
@@ -144,6 +223,14 @@ def page(request: Request, title: str, body: str) -> HTMLResponse:
         f"<style>body{{max-width:920px;margin:40px auto;font:16px system-ui}} "
         f"input,select,textarea{{width:100%;padding:8px;margin:5px 0}}"
         f"button{{padding:8px 14px}} .card{{border:1px solid #ddd;padding:16px;margin:12px 0}}"
+        f".field{{margin:12px 0}} .field>label{{display:block;margin-bottom:2px;font-weight:600}}"
+        f".check-row{{display:flex;align-items:flex-start;gap:8px;margin:8px 0;cursor:pointer}}"
+        f".check-row input{{width:auto;margin:3px 0 0;flex:none}}"
+        f".checks{{margin:12px 0;padding:12px;border:1px solid #ddd;border-radius:6px}}"
+        f"fieldset.group{{margin:16px 0;padding:12px 16px;border:1px solid #cbd5e1;border-radius:8px}}"
+        f"fieldset.group legend{{padding:0 6px;font-weight:600}}"
+        f"fieldset.group .check-row{{margin:0}}"
+        f".hint{{display:block;color:#6b7280;font-size:12px;margin-top:2px}}"
         f".lang-switch{{color:#2563eb;text-decoration:none;font-size:14px}} .lang-switch:hover{{text-decoration:underline}}</style>"
         f"<div style='text-align:right;margin-bottom:8px'>{switch}</div>{body}"
     )
@@ -362,26 +449,57 @@ def config_page(request: Request):
     t = I18N[lang]
     config = config_store.load()
     llm = config["llm"]
+    files_root = config.get("resources", {}).get("files", {}).get("root", ".")
+    local_enabled = llm.get("local_enabled", True)
+    available = ollama_models(llm.get("local_base_url", ""))
+    local_models = model_datalist("local_model", llm.get("local_model", ""), LOCAL_MODELS, available)
+    api_models = model_datalist("api_model", llm.get("api_model", ""), API_MODELS)
+    api_hidden = " style='display:none'" if not llm.get("api_enabled", False) else ""
     toggles = "".join(
-        f"<label><input type='checkbox' name='{key}' {'checked' if config['resources'][key]['enabled'] else ''}>{escape(item.get('label_en') if lang == 'en' else item['label'])}</label><br>"
+        f"<label class='check-row'><input type='checkbox' name='{key}' {'checked' if config['resources'][key]['enabled'] else ''}><span>{escape(item.get('label_en') if lang == 'en' else item['label'])}</span></label>"
         for key, item in RESOURCE_CATALOG.items()
     )
     return page(
         request,
         t["config_title"],
         f"<h1>{t['config_title']}</h1><form method='post'>"
-        f"<label>{t['local_base_url']}<input name='local_base_url' value='{escape(llm['local_base_url'])}'></label>"
-        f"<label>{t['local_model']}<input name='local_model' value='{escape(llm['local_model'])}'></label>"
-        f"<label><input type='checkbox' name='api_enabled' {'checked' if llm['api_enabled'] else ''}>{escape(t['api_fallback'])}</label>"
-        f"{toggles}<button>{t['save']}</button></form><p><a href='/'>{t['back']}</a></p>",
+        f"<fieldset class='group'><legend><label class='check-row'><input type='checkbox' name='local_enabled' {'checked' if local_enabled else ''}><span>{escape(t['local_section'])}</span></label></legend>"
+        f"<div class='field'><label for='local_base_url'>{t['local_base_url']}</label>"
+        f"<input id='local_base_url' name='local_base_url' value='{escape(llm['local_base_url'])}'></div>"
+        f"<div class='field'><label for='local_model'>{t['local_model_list']}</label>{local_models}"
+        f"<small class='hint'>{t['model_hint']}</small></div>"
+        f"<div class='field'><label for='files_root'>{t['files_root']}</label>"
+        f"<input id='files_root' name='files_root' value='{escape(files_root)}'>"
+        f"<small class='hint'>{t['files_root_hint']}</small></div></fieldset>"
+        f"<fieldset class='group'><legend><label class='check-row'><input type='checkbox' name='api_enabled' id='api_enabled' {'checked' if llm['api_enabled'] else ''}><span>{escape(t['api_section'])}</span></label></legend>"
+        f"<div id='api-fields'{api_hidden}>"
+        f"<div class='field'><label for='api_base_url'>{t['api_base_url']}</label>"
+        f"<input id='api_base_url' name='api_base_url' value='{escape(llm.get('api_base_url', ''))}'></div>"
+        f"<div class='field'><label for='api_model'>{t['api_model']}</label>{api_models}"
+        f"<small class='hint'>{t['model_hint']}</small></div>"
+        f"<small class='hint'>{escape(t['api_fallback'])}</small></div></fieldset>"
+        f"<div class='checks'>{toggles}</div>"
+        f"<button>{t['save']}</button></form>"
+        f"<script>var apiBox=document.getElementById('api_enabled'),apiFields=document.getElementById('api-fields');"
+        f"function syncApi(){{apiFields.style.display=apiBox.checked?'':'none';}}"
+        f"apiBox.addEventListener('change',syncApi);syncApi();</script>"
+        f"<p><a href='/'>{t['back']}</a></p>",
     )
 
 
 @app.post("/admin/config")
-def save_config(request: Request, local_base_url: str = Form(), local_model: str = Form(), api_enabled: str | None = Form(None), files: str | None = Form(None), web_search: str | None = Form(None), email: str | None = Form(None), crm: str | None = Form(None), website: str | None = Form(None)):
+def save_config(request: Request, local_base_url: str = Form(), local_model: str = Form(), api_base_url: str = Form(""), api_model: str = Form(""), api_enabled: str | None = Form(None), local_enabled: str | None = Form(None), files_root: str = Form("."), files: str | None = Form(None), web_search: str | None = Form(None), email: str | None = Form(None), crm: str | None = Form(None), website: str | None = Form(None)):
     require_admin(request)
     config = config_store.load()
-    config["llm"].update({"local_base_url": local_base_url.rstrip("/"), "local_model": local_model, "api_enabled": api_enabled is not None})
+    config["llm"].update({
+        "local_base_url": local_base_url.rstrip("/"),
+        "local_model": local_model,
+        "api_base_url": api_base_url.rstrip("/") if api_base_url else config["llm"].get("api_base_url", ""),
+        "api_model": api_model,
+        "api_enabled": api_enabled is not None,
+        "local_enabled": local_enabled is not None,
+    })
+    config["resources"]["files"]["root"] = files_root.strip() or "."
     for key, value in {"files": files, "web_search": web_search, "email": email, "crm": crm, "website": website}.items():
         config["resources"][key]["enabled"] = value is not None
     config_store.save(config)
