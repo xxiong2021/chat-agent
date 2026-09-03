@@ -118,3 +118,37 @@ def test_pdf_requests_route_to_pdf_tool_not_file_read(tmp_path):
     )
     assert "共 1 页" in reply or "pages" in reply or "文件 uploads/report.pdf" in reply
     assert "不是 UTF-8" not in reply
+
+
+def test_list_uploads_and_find_pdfs(tmp_path, monkeypatch):
+    """列出上传文件、查找各目录 PDF 都能给出文件级结果。"""
+    import app.agent.web_agent as wa
+    import app.tools.files as files_tools
+
+    work = tmp_path / "work"
+    (work / "uploads").mkdir(parents=True)
+    (work / "uploads" / "doc.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
+    (work / "uploads" / "note.txt").write_text("hi", encoding="utf-8")
+    (work / "docs").mkdir()
+    (work / "docs" / "guide.pdf").write_bytes(b"%PDF-1.4\n%%EOF")
+
+    monkeypatch.setattr(files_tools, "PROJECT_ROOT", work)
+
+    cfg = deepcopy(DEFAULT_CONFIG)
+    cfg["resources"]["files"]["root"] = str(work)
+
+    reply = wa.run_agent(
+        "web:admin",
+        [{"role": "user", "content": "列出已经上传的文件"}],
+        cfg,
+        is_admin=True,
+    )
+    assert "doc.pdf" in reply and "note.txt" in reply
+
+    reply = wa.run_agent(
+        "web:admin",
+        [{"role": "user", "content": "寻找各目录里有没有pdf 文件"}],
+        cfg,
+        is_admin=True,
+    )
+    assert "uploads/doc.pdf" in reply and "docs/guide.pdf" in reply

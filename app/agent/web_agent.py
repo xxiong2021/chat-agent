@@ -1,4 +1,5 @@
 import json
+import os
 import re
 
 from app.agent.permissions import PermissionManager
@@ -430,9 +431,45 @@ def extract_file_paths_for_delete(message: str):
 
 def detect_file_list_request(message: str):
     text = message.strip()
-    if not re.search(r"(列出|列举|有什么文件|有哪些文件|目录里有什么|目录中有什么|查看目录|显示目录)", text):
+    if not re.search(
+        r"(列出|列举|有什么文件|有哪些文件|有哪些上传|列出上传|目录里有什么|目录中有什么|查看目录|显示目录"
+        r"|寻找|查找|找找|搜索.*文件|有没有|看看 uploads|查看 uploads|uploads 目录|上传的文件)",
+        text,
+        re.IGNORECASE,
+    ):
         return None
     return {"path": "."}
+
+
+def find_pdfs(root_text: str) -> list[tuple[str, str]]:
+    """在文件根目录内递归查找 PDF，返回 [(相对目录, 文件名)]。"""
+    from pathlib import Path
+
+    import app.tools.files as files_tools
+
+    bases = [files_tools.PROJECT_ROOT]
+    for extra in (root_text or "").split("|"):
+        if extra and Path(extra).is_dir():
+            bases.append(Path(extra))
+    skip = {".git", ".venv", "__pycache__", ".pytest_cache", "node_modules"}
+    results: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for base in bases:
+        for dirpath, dirnames, filenames in os.walk(base):
+            dirnames[:] = [d for d in dirnames if d not in skip and not d.startswith(".")]
+            for name in filenames:
+                if name.lower().endswith(".pdf"):
+                    full = Path(dirpath) / name
+                    try:
+                        rel_dir = str(full.parent.relative_to(base))
+                    except ValueError:
+                        rel_dir = str(full.parent)
+                    key = str(full)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    results.append((rel_dir, name))
+    return results
 
 
 def detect_file_read_request(message: str):
@@ -596,6 +633,24 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
     pdf_result = handle_pdf_request(last_text, config)
     if pdf_result is not None:
         return pdf_result
+    if re.search(r"(寻找|查找|找找|有没有|搜.*pdf|find.*pdf|search.*pdf)", last_text, re.IGNORECASE) and "pdf" in last_text.lower():
+        pdfs = find_pdfs("")
+        if not pdfs:
+            return "在本地工作目录中没有找到 PDF 文件。"
+        lines = []
+        for rel_dir, name in pdfs:
+            path = f"{rel_dir}/{name}" if rel_dir != "." else name
+            lines.append(f"- {path}")
+        return f"找到 {len(pdfs)} 个 PDF 文件：\n" + "\n".join(lines)
+    if re.search(r"(上传的文件|uploads|列出上传|有哪些上传|看看 uploads|查看 uploads)", last_text, re.IGNORECASE):
+        from app.tools.files import file_list as _file_list
+        listing = _file_list("uploads") or {}
+        if listing.get("success"):
+            items = listing.get("items", [])
+            if not items:
+                return "uploads 目录为空（还没有上传过文件）。"
+            lines = [f"- {it['name']}" + ("/" if it.get('type') == 'directory' else "") for it in items]
+            return "已上传的文件：\n" + "\n".join(lines)
     if files_enabled:
         write_args = extract_file_write_arguments(last_text)
         if write_args:
