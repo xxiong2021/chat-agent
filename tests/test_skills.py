@@ -1,5 +1,6 @@
 from pathlib import Path
 from copy import deepcopy
+from types import SimpleNamespace
 
 from pypdf import PdfWriter
 
@@ -90,7 +91,7 @@ def test_pdf_skill_reads_pdf_within_configured_root(tmp_path):
 
 def test_pdf_requests_route_to_pdf_tool_not_file_read(tmp_path):
     """上传的 PDF 请求必须走 pdf_read，而不是被 file_read 当作 UTF-8 文本。"""
-    from app.agent.web_agent import run_agent
+    from app.agent.web_agent import handle_pdf_request, run_agent
     from app.core.config import DEFAULT_CONFIG
     from app.skills.loader import set_skill_enabled
     from app.tools.files import set_root
@@ -110,14 +111,45 @@ def test_pdf_requests_route_to_pdf_tool_not_file_read(tmp_path):
     set_skill_enabled(cfg, "pdf", True)
     set_root(str(work))
 
-    reply = run_agent(
-        "web:admin",
-        [{"role": "user", "content": "读取 uploads/report.pdf 并总结"}],
-        cfg,
-        is_admin=True,
-    )
-    assert "共 1 页" in reply or "pages" in reply or "文件 uploads/report.pdf" in reply
-    assert "不是 UTF-8" not in reply
+    # 纯读取 -> 直接返回文本（不含“不是 UTF-8”）
+    result = handle_pdf_request("读取 uploads/report.pdf", cfg)
+    assert isinstance(result, str) and "共 1 页" in result
+    assert "不是 UTF-8" not in result
+
+    # 带处理意图（总结/翻译）-> 返回 (path, pages, content) 供 LLM 处理
+    result = handle_pdf_request("读取 uploads/report.pdf 并总结", cfg)
+    assert isinstance(result, tuple) and result[0] == "uploads/report.pdf"
+
+    # run_agent 走到 LLM 时文档内容已注入上下文，而不是报 UTF-8 错误
+    captured = {}
+
+    class FakeResponse:
+        def __init__(self):
+            self.choices = [SimpleNamespace(message=SimpleNamespace(content="这是总结", tool_calls=None))]
+
+    class FakeRouter:
+        def __init__(self, **kwargs):
+            captured["messages"] = kwargs["config_store"].load()
+
+        def complete(self, messages, tools=None):
+            captured["llm_messages"] = messages
+            return FakeResponse()
+
+    import app.agent.web_agent as wa
+
+    original = wa.LLMRouter
+    wa.LLMRouter = FakeRouter
+    try:
+        reply = run_agent(
+            "web:admin",
+            [{"role": "user", "content": "读取 uploads/report.pdf 并翻译为中文"}],
+            cfg,
+            is_admin=True,
+        )
+    finally:
+        wa.LLMRouter = original
+    assert reply == "这是总结"
+    assert "[PDF 文档内容]" in captured["llm_messages"][1]["content"]
 
 
 def test_list_uploads_and_find_pdfs(tmp_path, monkeypatch):

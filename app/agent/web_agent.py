@@ -573,8 +573,8 @@ def detect_pdf_request(text: str) -> dict | None:
     return None
 
 
-def handle_pdf_request(text: str, config: dict) -> str | None:
-    """PDF 请求直接路由到 pdf_read 工具（技能启用时）。"""
+def handle_pdf_request(text: str, config: dict) -> tuple | str | None:
+    """PDF 请求路由到 pdf_read；纯读取返回文本，翻译/总结等返回 (路径, 页码, 文本)。"""
     request = detect_pdf_request(text)
     if request is None:
         return None
@@ -590,8 +590,19 @@ def handle_pdf_request(text: str, config: dict) -> str | None:
     result = pdf_tool(request["path"])
     if not result.get("success", False):
         return f"PDF 读取失败：{result.get('error', '未知错误')}"
-    head = f"文件 {request['path']}（共 {result['pages']} 页，已读取 {result['from_page']}-{result['to_page']} 页）：\n"
-    return head + result.get("content", "")
+    content = result.get("content", "")
+    text_lower = text.lower()
+    wants_processing = bool(
+        re.search(
+            r"(翻译|总结|摘要|归纳|分析|提取|问答|转成|convert|translate|summar|abstract|analy)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if not wants_processing:
+        head = f"文件 {request['path']}（共 {result['pages']} 页，已读取 {result['from_page']}-{result['to_page']} 页）：\n"
+        return head + content
+    return (request["path"], result.get("pages", 0), content)
 
 
 def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool = False, config_store: ConfigStore | None = None) -> str:
@@ -631,31 +642,37 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
 
     # ---------------- 确定性意图检测兜底 ----------------
     pdf_result = handle_pdf_request(last_text, config)
-    if pdf_result is not None:
+    pdf_context = None
+    if isinstance(pdf_result, tuple):
+        pdf_context = pdf_result
+    elif pdf_result is not None:
         return pdf_result
-    if re.search(
-        r"(寻找|查找|找找|有没有|列出|列举|显示|有哪些|搜.*pdf|find.*pdf|search.*pdf|list.*pdf)",
-        last_text,
-        re.IGNORECASE,
-    ) and "pdf" in last_text.lower():
-        pdfs = find_pdfs("")
-        if not pdfs:
-            return "在本地工作目录中没有找到 PDF 文件。"
-        lines = []
-        for rel_dir, name in pdfs:
-            path = (f"{rel_dir}/{name}" if rel_dir != "." else name).replace("\\", "/")
-            lines.append(f"- {path}")
-        return f"找到 {len(pdfs)} 个 PDF 文件：\n" + "\n".join(lines)
-    if re.search(r"(上传的文件|uploads|列出上传|有哪些上传|看看 uploads|查看 uploads)", last_text, re.IGNORECASE):
-        from app.tools.files import file_list as _file_list
-        listing = _file_list("uploads") or {}
-        if listing.get("success"):
-            items = listing.get("items", [])
-            if not items:
-                return "uploads 目录为空（还没有上传过文件）。"
-            lines = [f"- {it['name']}" + ("/" if it.get('type') == 'directory' else "") for it in items]
-            return "已上传的文件：\n" + "\n".join(lines)
-    if files_enabled:
+    if pdf_context is None:
+        if re.search(
+            r"(寻找|查找|找找|有没有|列出|列举|显示|有哪些|搜.*pdf|find.*pdf|search.*pdf|list.*pdf)",
+            last_text,
+            re.IGNORECASE,
+        ) and "pdf" in last_text.lower():
+            pdfs = find_pdfs("")
+            if not pdfs:
+                return "在本地工作目录中没有找到 PDF 文件。"
+            lines = []
+            for rel_dir, name in pdfs:
+                path = (f"{rel_dir}/{name}" if rel_dir != "." else name).replace("\\", "/")
+                lines.append(f"- {path}")
+            return f"找到 {len(pdfs)} 个 PDF 文件：\n" + "\n".join(lines)
+        if re.search(r"(上传的文件|uploads|列出上传|有哪些上传|看看 uploads|查看 uploads)", last_text, re.IGNORECASE):
+            from app.tools.files import file_list as _file_list
+            listing = _file_list("uploads") or {}
+            if listing.get("success"):
+                items = listing.get("items", [])
+                if not items:
+                    return "uploads 目录为空（还没有上传过文件）。"
+                lines = [f"- {it['name']}" + ("/" if it.get('type') == 'directory' else "") for it in items]
+                return "已上传的文件：\n" + "\n".join(lines)
+    if pdf_context is not None:
+        pass
+    elif files_enabled:
         write_args = extract_file_write_arguments(last_text)
         if write_args:
             return create_pending_action(user_id, "file_write", write_args)
@@ -668,7 +685,7 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
         read_args = detect_file_read_request(last_text)
         if read_args:
             return run_auto_tool(user_id, "file_read", read_args, functions)
-    else:
+    elif not files_enabled:
         # 文件功能未启用：识别文件请求并明确拒绝，避免模型编造结果。
         if (
             extract_file_write_arguments(last_text)
@@ -678,13 +695,14 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
         ):
             return "没有权限：本地文件功能未启用。请联系管理员在“管理配置”中开启“本地文件”。"
 
-    if web_enabled:
-        search_args = detect_web_search_request(last_text)
-        if search_args:
-            return run_auto_tool(user_id, "web_search", search_args, functions)
-    else:
-        if detect_web_search_request(last_text):
-            return "没有权限：网站搜索功能未启用。请联系管理员在“管理配置”中开启“网站搜索”。"
+    if pdf_context is None:
+        if web_enabled:
+            search_args = detect_web_search_request(last_text)
+            if search_args:
+                return run_auto_tool(user_id, "web_search", search_args, functions)
+        else:
+            if detect_web_search_request(last_text):
+                return "没有权限：网站搜索功能未启用。请联系管理员在“管理配置”中开启“网站搜索”。"
 
     # ---------------- LLM 多轮工具调用 ----------------
     system_prompt = SYSTEM_PROMPT
@@ -700,7 +718,29 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
             "\n注意：网站搜索功能当前未启用。如果用户要求搜索，"
             "直接告知“网站搜索功能未启用，没有权限”，不要声称已执行搜索。"
         )
-    llm_messages = [{"role": "system", "content": system_prompt}, *messages]
+    llm_messages = [{"role": "system", "content": system_prompt}]
+    if pdf_context is not None:
+        path, pages, content = pdf_context
+        llm_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[PDF 文档内容] 文件：{path}（共 {pages} 页）。"
+                    "请以这份文档内容为依据完成用户接下来的要求。文档内容如下：\n"
+                    f"{content}"
+                ),
+            }
+        )
+        llm_messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "我已收到这份 PDF 文档的内容。请告诉我你希望如何处理"
+                    "（例如翻译为中文、总结要点等），我会直接基于文档内容完成。"
+                ),
+            }
+        )
+    llm_messages.extend(messages)
 
     for _round in range(1, 9):
         response = LLMRouter(config_store=_RuntimeConfig(config)).complete(llm_messages, tools=tools)
