@@ -633,13 +633,17 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
     pdf_result = handle_pdf_request(last_text, config)
     if pdf_result is not None:
         return pdf_result
-    if re.search(r"(寻找|查找|找找|有没有|搜.*pdf|find.*pdf|search.*pdf)", last_text, re.IGNORECASE) and "pdf" in last_text.lower():
+    if re.search(
+        r"(寻找|查找|找找|有没有|列出|列举|显示|有哪些|搜.*pdf|find.*pdf|search.*pdf|list.*pdf)",
+        last_text,
+        re.IGNORECASE,
+    ) and "pdf" in last_text.lower():
         pdfs = find_pdfs("")
         if not pdfs:
             return "在本地工作目录中没有找到 PDF 文件。"
         lines = []
         for rel_dir, name in pdfs:
-            path = f"{rel_dir}/{name}" if rel_dir != "." else name
+            path = (f"{rel_dir}/{name}" if rel_dir != "." else name).replace("\\", "/")
             lines.append(f"- {path}")
         return f"找到 {len(pdfs)} 个 PDF 文件：\n" + "\n".join(lines)
     if re.search(r"(上传的文件|uploads|列出上传|有哪些上传|看看 uploads|查看 uploads)", last_text, re.IGNORECASE):

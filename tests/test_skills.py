@@ -152,3 +152,12 @@ def test_list_uploads_and_find_pdfs(tmp_path, monkeypatch):
         is_admin=True,
     )
     assert "uploads/doc.pdf" in reply and "docs/guide.pdf" in reply
+
+    for msg in ("列出pdf文件", "pdf文件有哪些", "list pdf files"):
+        reply = wa.run_agent(
+            "web:admin",
+            [{"role": "user", "content": msg}],
+            cfg,
+            is_admin=True,
+        )
+        assert "uploads/doc.pdf" in reply and "docs/guide.pdf" in reply, (msg, reply)
