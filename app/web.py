@@ -1,11 +1,12 @@
 import os
+import time
 from html import escape
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
 import httpx
 
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -67,6 +68,10 @@ I18N = {
         "available_resources": "Available resources",
         "input_placeholder": "Type a message, Enter to send",
         "send": "Send",
+        "upload": "Upload",
+        "uploading": "Uploading…",
+        "upload_ok": "Uploaded: {path}",
+        "upload_fail": "Upload failed: ",
         "thinking": "Thinking…",
         "request_failed": "Request failed: ",
         "enabled": "Enabled",
@@ -107,6 +112,10 @@ I18N = {
         "available_resources": "可用资源",
         "input_placeholder": "输入消息，Enter 发送",
         "send": "发送",
+        "upload": "上传",
+        "uploading": "上传中…",
+        "upload_ok": "已上传：{path}",
+        "upload_fail": "上传失败：",
         "thinking": "正在思考…",
         "request_failed": "请求失败：",
         "enabled": "启用",
@@ -211,6 +220,22 @@ def current_user(request: Request):
     return request.session.get("user")
 
 
+def upload_dir() -> Path:
+    """上传目录 = 配置的本地可操作目录/uploads，默认项目根/uploads。"""
+    config = config_store.load()
+    raw_root = config.get("resources", {}).get("files", {}).get("root") or "."
+    root_path = Path(str(raw_root)).expanduser()
+    if not root_path.is_absolute():
+        root_path = Path(__file__).resolve().parents[1] / root_path
+    uploads = root_path / "uploads"
+    try:
+        uploads.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        uploads = Path(__file__).resolve().parents[1] / "uploads"
+        uploads.mkdir(parents=True, exist_ok=True)
+    return uploads
+
+
 def require_admin(request: Request):
     user = current_user(request)
     if not user or user["role"] != "admin":
@@ -261,6 +286,8 @@ footer{background:#fff;border-top:1px solid #d7dbe0;padding:12px 20px}
 footer form{max-width:900px;margin:0 auto;display:flex;gap:8px}
 footer input{flex:1;padding:11px 14px;font-size:16px;border:1px solid #c7ccd4;border-radius:10px;outline:none}
 footer input:focus{border-color:#2563eb}
+footer .attach-btn{padding:6px 13px;border:1px solid #c7ccd4;background:#fff;border-radius:10px;font-size:22px;line-height:1;color:#000;font-weight:400;cursor:pointer;white-space:nowrap}
+footer .attach-btn:hover{background:#f1f5f9}
 footer button{padding:11px 20px;border:none;background:#2563eb;color:#fff;border-radius:10px;font-size:16px;cursor:pointer}
 footer button:disabled{opacity:.6;cursor:default}
 </style>
@@ -272,6 +299,10 @@ const main=document.getElementById('messages');
 const form=document.getElementById('chat-form');
 const input=document.getElementById('message');
 const sendBtn=document.getElementById('send');
+const fileInput=document.getElementById('file-input');
+const uploadBtn=document.getElementById('upload-btn');
+let uploadedPath=null;
+const UPLOAD_OK_TMPL='__UPLOAD_OK__';
 function addMsg(role,text){
   const d=document.createElement('div');
   d.className='msg '+role;
@@ -280,6 +311,29 @@ function addMsg(role,text){
   main.scrollTop=main.scrollHeight;
   return d;
 }
+async function doUpload(file){
+  if(!file)return;
+  const fd=new FormData();
+  fd.append('file',file);
+  const note=addMsg('user','__UPLOADING__ '+file.name);
+  uploadBtn.disabled=true;
+  try{
+    const r=await fetch('/api/upload',{method:'POST',body:fd});
+    if(r.status===401){location.href='/login';return;}
+    const data=await r.json();
+    if(!r.ok||!data.ok){note.remove();addMsg('error','__UPLOAD_FAIL__'+(data.detail||data.error||''));return;}
+    note.remove();
+    uploadedPath=data.path;
+    addMsg('assistant',UPLOAD_OK_TMPL.replace('{path}',uploadedPath));
+  }catch(err){
+    note.remove();
+    addMsg('error','__UPLOAD_FAIL__'+err.message);
+  }
+  uploadBtn.disabled=false;
+  fileInput.value='';
+}
+uploadBtn.addEventListener('click',function(){fileInput.click();});
+fileInput.addEventListener('change',function(){doUpload(this.files[0]);});
 async function loadHistory(){
   const r=await fetch('/api/history');
   if(r.status===401){location.href='/login';return;}
@@ -298,16 +352,21 @@ function sendMsg(role,text){
 form.addEventListener('submit',async function(e){
   e.preventDefault();
   const text=input.value.trim();
-  if(!text)return;
+  let prompt=text;
+  if(!text&&!uploadedPath)return;
+  if(uploadedPath){
+    prompt=text?prompt+' ('+uploadedPath+')':'请读取并分析上传的文件：'+uploadedPath;
+  }
   input.value='';
-  addMsg('user',text);
+  addMsg('user',prompt);
+  uploadedPath=null;
   const typing=sendMsg('assistant','__THINKING__');
   sendBtn.disabled=true;
   try{
     const r=await fetch('/api/chat',{
       method:'POST',
       headers:{'Content-Type':'application/x-www-form-urlencoded'},
-      body:'message='+encodeURIComponent(text)
+      body:'message='+encodeURIComponent(prompt)
     });
     if(r.status===401){location.href='/login';return;}
     const data=await r.json();
@@ -337,6 +396,9 @@ def chat_page(request: Request, user: dict, resources_html: str) -> HTMLResponse
     script = (
         CHAT_SCRIPT.replace("__THINKING__", t["thinking"])
         .replace("__REQUEST_FAILED__", t["request_failed"])
+        .replace("__UPLOADING__", t["uploading"])
+        .replace("'__UPLOAD_OK__'", "'" + t["upload_ok"] + "'")
+        .replace("__UPLOAD_FAIL__", t["upload_fail"])
     )
     body = (
         CHAT_STYLE
@@ -348,7 +410,10 @@ def chat_page(request: Request, user: dict, resources_html: str) -> HTMLResponse
         + "</nav></header>"
         + "<main id='messages'></main>"
         + "<details><summary>" + escape(t["available_resources"]) + "</summary>" + resources_html + "</details>"
-        + "<footer><form id='chat-form'><input id='message' autocomplete='off' placeholder='" + escape(t["input_placeholder"]) + "'><button id='send'>" + escape(t["send"]) + "</button></form></footer>"
+        + "<footer><form id='chat-form'><input id='file-input' type='file' accept='.pdf,.txt,.md,.csv' hidden>"
+        + "<button type='button' id='upload-btn' class='attach-btn' title='" + escape(t["upload"]) + "'>+</button>"
+        + "<input id='message' autocomplete='off' placeholder='" + escape(t["input_placeholder"]) + "'>"
+        + "<button id='send'>" + escape(t["send"]) + "</button></form></footer>"
         + script
     )
     return HTMLResponse("<!doctype html><meta charset='utf-8'><title>Company Agent</title>" + body)
@@ -449,6 +514,38 @@ def chat(request: Request, message: str = Form()):
     if len(history) > MAX_HISTORY:
         del history[: len(history) - MAX_HISTORY]
     return {"reply": reply}
+
+
+@app.post("/api/upload")
+async def upload_file(request: Request, file: UploadFile = File(...)):
+    t = I18N[get_lang(request)]
+    user = current_user(request)
+    if not user:
+        raise HTTPException(401, t["login_required"])
+    filename = (file.filename or "").replace("\\", "/").split("/")[-1]
+    safe_name = "".join(
+        c if c.isalnum() or c in "._-" else "_" for c in filename
+    ).strip(".")
+    if not safe_name or "." not in safe_name:
+        raise HTTPException(400, "文件名无效")
+    if not safe_name.lower().endswith((".pdf", ".txt", ".md", ".csv")):
+        raise HTTPException(400, "仅支持上传 .pdf/.txt/.md/.csv 文件")
+    unique = f"{user['username']}_{int(time.time())}_{safe_name}"
+    dest = upload_dir() / unique
+    try:
+        content = await file.read()
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(413, "文件过大（上限 50MB）")
+        dest.write_bytes(content)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(500, "文件保存失败")
+    return {
+        "ok": True,
+        "name": safe_name,
+        "path": f"uploads/{unique}",
+    }
 
 
 @app.get("/admin/config", response_class=HTMLResponse)
