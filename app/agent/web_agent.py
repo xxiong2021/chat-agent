@@ -721,26 +721,21 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
     llm_messages = [{"role": "system", "content": system_prompt}]
     if pdf_context is not None:
         path, pages, content = pdf_context
+        instruction = re.sub(r"读取\s*[^，。；,\s]*\.pdf\s*", "", last_text).strip() or "请阅读并处理这份文档"
         llm_messages.append(
             {
                 "role": "user",
                 "content": (
-                    f"[PDF 文档内容] 文件：{path}（共 {pages} 页）。"
-                    "请以这份文档内容为依据完成用户接下来的要求。文档内容如下：\n"
-                    f"{content}"
+                    "以下是一份 PDF 文档提取出的文本内容"
+                    f"（文件 {path}，共 {pages} 页）。\n"
+                    "请直接完成这个任务，不要询问、不要复述原文、不要只返回确认消息：\n"
+                    f"{instruction}\n\n"
+                    f"===== PDF 文档内容开始 =====\n{content}\n===== PDF 文档内容结束 ====="
                 ),
             }
         )
-        llm_messages.append(
-            {
-                "role": "assistant",
-                "content": (
-                    "我已收到这份 PDF 文档的内容。请告诉我你希望如何处理"
-                    "（例如翻译为中文、总结要点等），我会直接基于文档内容完成。"
-                ),
-            }
-        )
-    llm_messages.extend(messages)
+    else:
+        llm_messages.extend(messages)
 
     for _round in range(1, 9):
         response = LLMRouter(config_store=_RuntimeConfig(config)).complete(llm_messages, tools=tools)

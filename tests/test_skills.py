@@ -149,7 +149,8 @@ def test_pdf_requests_route_to_pdf_tool_not_file_read(tmp_path):
     finally:
         wa.LLMRouter = original
     assert reply == "这是总结"
-    assert "[PDF 文档内容]" in captured["llm_messages"][1]["content"]
+    assert "PDF 文档内容开始" in captured["llm_messages"][1]["content"]
+    assert "并翻译为中文" in captured["llm_messages"][1]["content"]
 
 
 def test_list_uploads_and_find_pdfs(tmp_path, monkeypatch):
