@@ -86,3 +86,35 @@ def test_pdf_skill_reads_pdf_within_configured_root(tmp_path):
 
     with pytest.raises(PermissionError):
         module.SKILL_META["tools"]["pdf_read"]("../outside.pdf")
+
+
+def test_pdf_requests_route_to_pdf_tool_not_file_read(tmp_path):
+    """上传的 PDF 请求必须走 pdf_read，而不是被 file_read 当作 UTF-8 文本。"""
+    from app.agent.web_agent import run_agent
+    from app.core.config import DEFAULT_CONFIG
+    from app.skills.loader import set_skill_enabled
+    from app.tools.files import set_root
+
+    work = tmp_path / "work"
+    (work / "uploads").mkdir(parents=True)
+    pdf_path = work / "uploads" / "report.pdf"
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=200, height=200)
+    # pypdf cannot draw text without reportlab; the routing itself is what matters,
+    # so create a PDF and assert the reply mentions the pdf skill path (pages info).
+    with open(pdf_path, "wb") as f:
+        writer.write(f)
+
+    cfg = deepcopy(DEFAULT_CONFIG)
+    cfg["resources"]["files"]["root"] = str(work)
+    set_skill_enabled(cfg, "pdf", True)
+    set_root(str(work))
+
+    reply = run_agent(
+        "web:admin",
+        [{"role": "user", "content": "读取 uploads/report.pdf 并总结"}],
+        cfg,
+        is_admin=True,
+    )
+    assert "共 1 页" in reply or "pages" in reply or "文件 uploads/report.pdf" in reply
+    assert "不是 UTF-8" not in reply

@@ -52,6 +52,10 @@ file_write 和 file_delete 是敏感操作。程序会在真正执行前拦截�
 例如用户说“创建 test.txt”，path 应该是 test.txt；不要添加绝对路径。
 只能操作应用目录内部的文件。
 
+## PDF 文件
+
+PDF 是二进制文件，不能用 file_read 读取。处理 PDF（读取、总结、问答）必须使用 pdf_read 工具，path 传 PDF 的相对路径。
+
 ## 对话
 
 结合历史对话理解“刚才、上一个、它、这个文件”等指代。
@@ -519,6 +523,37 @@ def handle_skill_request(user_id: str, text: str, config: dict, is_admin: bool =
     return f"技能 {requested} 已启用。现在可以让我读取并分析 PDF 文件了。"
 
 
+def detect_pdf_request(text: str) -> dict | None:
+    """识别“读取/总结/分析 xxx.pdf”类请求。"""
+    if "pdf" not in text.lower():
+        return None
+    m = re.search(r"([\w./\\-]+\.pdf)", text, re.IGNORECASE)
+    if not m:
+        return None
+    return {"path": m.group(1)}
+
+
+def handle_pdf_request(text: str, config: dict) -> str | None:
+    """PDF 请求直接路由到 pdf_read 工具（技能启用时）。"""
+    request = detect_pdf_request(text)
+    if request is None:
+        return None
+    if not skill_enabled(config, "pdf"):
+        return "读取 PDF 需要先启用 pdf 技能。管理员可在“管理配置-技能”中勾选 PDF，或直接在聊天中说“启用 pdf 技能”。"
+    found = discover_skills()
+    module = load_skill_module(found.get("pdf") or {})
+    if module is None:
+        return "pdf 技能加载失败，请检查服务器部署。"
+    pdf_tool = (getattr(module, "SKILL_META", {}) or {}).get("tools", {}).get("pdf_read")
+    if pdf_tool is None:
+        return "pdf 技能缺少 pdf_read 工具。"
+    result = pdf_tool(request["path"])
+    if not result.get("success", False):
+        return f"PDF 读取失败：{result.get('error', '未知错误')}"
+    head = f"文件 {request['path']}（共 {result['pages']} 页，已读取 {result['from_page']}-{result['to_page']} 页）：\n"
+    return head + result.get("content", "")
+
+
 def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool = False, config_store: ConfigStore | None = None) -> str:
     """Web Agent 主入口：意图检测 + 多轮工具调用 + 权限确认。"""
     files_config = config.get("resources", {}).get("files", {})
@@ -555,6 +590,9 @@ def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool =
         )
 
     # ---------------- 确定性意图检测兜底 ----------------
+    pdf_result = handle_pdf_request(last_text, config)
+    if pdf_result is not None:
+        return pdf_result
     if files_enabled:
         write_args = extract_file_write_arguments(last_text)
         if write_args:
