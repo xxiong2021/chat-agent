@@ -527,10 +527,13 @@ def detect_pdf_request(text: str) -> dict | None:
     """识别“读取/总结/分析 xxx.pdf”类请求。"""
     if "pdf" not in text.lower():
         return None
-    m = re.search(r"([\w./\\-]+\.pdf)", text, re.IGNORECASE)
-    if not m:
-        return None
-    return {"path": m.group(1)}
+    m = re.search(r"(?<![\w.\\/-])([A-Za-z0-9_./\\-]+\.pdf)", text, re.IGNORECASE)
+    if m:
+        return {"path": m.group(1)}
+    m = re.search(r"uploads/[A-Za-z0-9_.\\/-]+\.pdf", text, re.IGNORECASE)
+    if m:
+        return {"path": m.group(0)}
+    return None
 
 
 def handle_pdf_request(text: str, config: dict) -> str | None:
