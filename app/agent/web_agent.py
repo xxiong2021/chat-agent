@@ -4,6 +4,13 @@ import re
 from app.agent.permissions import PermissionManager
 from app.core.config import ConfigStore
 from app.llm.router import LLMRouter
+from app.skills.loader import (
+    discover_skills,
+    load_skill_module,
+    set_skill_enabled,
+    skill_available,
+    skill_enabled,
+)
 from app.tools.calculator import calculator
 from app.tools.files import file_delete, file_list, file_read, file_write, set_root
 
@@ -168,6 +175,25 @@ def build_tools(config: dict):
     resources = config.get("resources", {})
     functions = dict(TOOL_FUNCTIONS)
     schemas = [TOOL_SCHEMAS["calculator"]]
+    enabled_skill_descriptions: list[str] = []
+
+    for name, manifest in discover_skills().items():
+        if not skill_enabled(config, name):
+            continue
+        module = load_skill_module(manifest)
+        if module is None:
+            continue
+        module_meta = getattr(module, "SKILL_META", {})
+        module_tools = module_meta.get("tools", {})
+        for tool_name, tool_fn in module_tools.items():
+            schema = (manifest.get("tools") or {}).get(tool_name)
+            if schema is None:
+                continue
+            functions[tool_name] = tool_fn
+            schemas.append({"type": "function", "function": {"name": tool_name, **schema}})
+        desc = (manifest.get("description_zh") or manifest.get("description")) or ""
+        if desc:
+            enabled_skill_descriptions.append(f"- {desc}")
 
     if resources.get("web_search", {}).get("enabled"):
         try:
@@ -195,7 +221,7 @@ def build_tools(config: dict):
         for name in ("file_list", "file_read", "file_write", "file_delete"):
             functions.pop(name, None)
 
-    return schemas, functions
+    return schemas, functions, enabled_skill_descriptions
 
 
 def is_confirmation(message: str, confirmation_token: str) -> bool:
@@ -460,7 +486,40 @@ def run_auto_tool(user_id: str, name: str, arguments: dict, functions: dict) -> 
     return format_tool_result(name, arguments, result)
 
 
-def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
+def handle_skill_request(user_id: str, text: str, config: dict, is_admin: bool = False, config_store: ConfigStore | None = None) -> str | None:
+    """识别“启用/安装 xx skill”类请求；命中则返回结果消息，否则返回 None。"""
+    m = re.search(
+        r"(?:安装|启用|开启|添加|增加|打开|enable|install|add|turn on)\s*(?:pdf\s*)?(?:skill|技能|插件|能力)"
+        r"|(?:pdf\s*)?(?:skill|技能)\s*(?:安装|启用|开启|添加|打开|enable|install)",
+        text,
+        re.IGNORECASE,
+    )
+    if not m:
+        return None
+    available = discover_skills()
+    if not available:
+        return "当前没有可用的技能包。"
+    requested = None
+    lowered = text.lower()
+    for name in available:
+        if name.lower() in lowered or ("pdf" in lowered and name == "pdf"):
+            requested = name
+            break
+    if requested is None:
+        names = "、".join(available)
+        return f"没有识别到要启用的技能。当前可用技能：{names}。"
+    if not is_admin:
+        return "没有权限：启用技能需要管理员权限。"
+    if skill_enabled(config, requested):
+        return f"技能 {requested} 已经启用，可以直接使用（例如：读取 PDF 并总结）。"
+    if not set_skill_enabled(config, requested, True):
+        return f"技能 {requested} 不可用。"
+    if config_store is not None:
+        config_store.save(config)
+    return f"技能 {requested} 已启用。现在可以让我读取并分析 PDF 文件了。"
+
+
+def run_agent(user_id: str, messages: list[dict], config: dict, is_admin: bool = False, config_store: ConfigStore | None = None) -> str:
     """Web Agent 主入口：意图检测 + 多轮工具调用 + 权限确认。"""
     files_config = config.get("resources", {}).get("files", {})
     configured_root = files_config.get("root")
@@ -469,17 +528,21 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
             set_root(configured_root)
         except (ValueError, OSError):
             pass
-    tools, functions = build_tools(config)
+    tools, functions, skill_descriptions = build_tools(config)
     resources = config.get("resources", {})
     files_enabled = files_config.get("enabled", True)
     web_enabled = resources.get("web_search", {}).get("enabled", False)
 
+    last_text = messages[-1]["content"] if messages else ""
+    skill_result = handle_skill_request(user_id, last_text, config, is_admin=is_admin, config_store=config_store)
+    if skill_result is not None:
+        return skill_result
+
     pending = permission_manager.get_pending_action(user_id)
     if pending:
-        last = messages[-1]["content"] if messages else ""
-        if is_confirmation(last, pending["confirmation_token"]):
+        if is_confirmation(last_text, pending["confirmation_token"]):
             return execute_pending_action(user_id, functions)
-        if is_cancellation(last):
+        if is_cancellation(last_text):
             permission_manager.clear_pending_action(user_id)
             return f"已取消操作：{pending['tool_name']}"
         arguments_text = json.dumps(pending["arguments"], ensure_ascii=False, indent=2)
@@ -492,7 +555,6 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
         )
 
     # ---------------- 确定性意图检测兜底 ----------------
-    last_text = messages[-1]["content"] if messages else ""
     if files_enabled:
         write_args = extract_file_write_arguments(last_text)
         if write_args:
@@ -526,6 +588,8 @@ def run_agent(user_id: str, messages: list[dict], config: dict) -> str:
 
     # ---------------- LLM 多轮工具调用 ----------------
     system_prompt = SYSTEM_PROMPT
+    if skill_descriptions:
+        system_prompt += "\n\n## 技能工具\n" + "\n".join(skill_descriptions)
     if not files_enabled:
         system_prompt += (
             "\n注意：本地文件功能当前未启用。如果用户要求创建、读取、修改、删除文件，"

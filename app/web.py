@@ -15,6 +15,7 @@ from app.core.auth import UserStore
 from app.core.config import ConfigStore
 from app.agent.web_agent import run_agent
 from app.resources.registry import RESOURCE_CATALOG
+from app.skills.loader import discover_skills, skill_display, skill_enabled
 
 load_dotenv()
 
@@ -71,6 +72,7 @@ I18N = {
         "enabled": "Enabled",
         "disabled": "Disabled",
         "config_title": "Admin settings",
+        "skills_section": "Skills",
         "local_section": "Local models",
         "api_section": "Use API models",
         "local_base_url": "Local base URL",
@@ -110,6 +112,7 @@ I18N = {
         "enabled": "启用",
         "disabled": "关闭",
         "config_title": "管理配置",
+        "skills_section": "技能",
         "local_section": "本地模型",
         "api_section": "使用 API 模型",
         "local_base_url": "本地地址",
@@ -429,7 +432,13 @@ def chat(request: Request, message: str = Form()):
     history = chat_history.setdefault(user["username"], [])
     history.append({"role": "user", "content": text})
     try:
-        reply = run_agent(f"web:{user['username']}", history, config_store.load())
+        reply = run_agent(
+            f"web:{user['username']}",
+            history,
+            config_store.load(),
+            is_admin=user.get("role") == "admin",
+            config_store=config_store,
+        )
     except RuntimeError:
         history.pop()
         return JSONResponse(
@@ -455,6 +464,17 @@ def config_page(request: Request):
     local_models = model_datalist("local_model", llm.get("local_model", ""), LOCAL_MODELS, available)
     api_models = model_datalist("api_model", llm.get("api_model", ""), API_MODELS)
     api_hidden = " style='display:none'" if not llm.get("api_enabled", False) else ""
+    skills_html = "".join(
+        f"<label class='check-row'><input type='checkbox' name='skill_{name}' {'checked' if skill_enabled(config, name) else ''}>"
+        f"<span>{escape(info['title'])} — {escape(info['description'])}</span></label>"
+        for name, manifest in sorted(discover_skills().items())
+        for info in [skill_display(manifest, lang)]
+    )
+    skills_block = ""
+    if skills_html:
+        skills_block = (
+            f"<div class='checks'><b>{escape(t['skills_section'])}</b><br>{skills_html}</div>"
+        )
     toggles = "".join(
         f"<label class='check-row'><input type='checkbox' name='{key}' {'checked' if config['resources'][key]['enabled'] else ''}><span>{escape(item.get('label_en') if lang == 'en' else item['label'])}</span></label>"
         for key, item in RESOURCE_CATALOG.items()
@@ -479,6 +499,7 @@ def config_page(request: Request):
         f"<small class='hint'>{t['model_hint']}</small></div>"
         f"<small class='hint'>{escape(t['api_fallback'])}</small></div></fieldset>"
         f"<div class='checks'>{toggles}</div>"
+        f"{skills_block}"
         f"<button>{t['save']}</button></form>"
         f"<script>var apiBox=document.getElementById('api_enabled'),apiFields=document.getElementById('api-fields');"
         f"function syncApi(){{apiFields.style.display=apiBox.checked?'':'none';}}"
@@ -488,19 +509,26 @@ def config_page(request: Request):
 
 
 @app.post("/admin/config")
-def save_config(request: Request, local_base_url: str = Form(), local_model: str = Form(), api_base_url: str = Form(""), api_model: str = Form(""), api_enabled: str | None = Form(None), local_enabled: str | None = Form(None), files_root: str = Form("."), files: str | None = Form(None), web_search: str | None = Form(None), email: str | None = Form(None), crm: str | None = Form(None), website: str | None = Form(None)):
+async def save_config(request: Request):
     require_admin(request)
+    form = await request.form()
+    def checked(name: str) -> bool:
+        return form.get(name) is not None
     config = config_store.load()
     config["llm"].update({
-        "local_base_url": local_base_url.rstrip("/"),
-        "local_model": local_model,
-        "api_base_url": api_base_url.rstrip("/") if api_base_url else config["llm"].get("api_base_url", ""),
-        "api_model": api_model,
-        "api_enabled": api_enabled is not None,
-        "local_enabled": local_enabled is not None,
+        "local_base_url": str(form.get("local_base_url", "")).rstrip("/"),
+        "local_model": str(form.get("local_model", "")),
+        "api_base_url": str(form.get("api_base_url", "")).rstrip("/") or config["llm"].get("api_base_url", ""),
+        "api_model": str(form.get("api_model", "")),
+        "api_enabled": checked("api_enabled"),
+        "local_enabled": checked("local_enabled"),
     })
-    config["resources"]["files"]["root"] = files_root.strip() or "."
-    for key, value in {"files": files, "web_search": web_search, "email": email, "crm": crm, "website": website}.items():
-        config["resources"][key]["enabled"] = value is not None
+    config["resources"]["files"]["root"] = str(form.get("files_root", ".")).strip() or "."
+    for key in ("files", "web_search", "email", "crm", "website"):
+        config["resources"][key]["enabled"] = checked(key)
+    skills = config.setdefault("skills", {})
+    for name in discover_skills():
+        entry = skills.setdefault(name, {})
+        entry["enabled"] = checked(f"skill_{name}")
     config_store.save(config)
     return RedirectResponse("/admin/config", status_code=303)

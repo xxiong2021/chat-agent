@@ -34,6 +34,15 @@ The admin page lets you configure the local Ollama address, model, API fallback,
 
 Ollama exposes an OpenAI-compatible `/v1/chat/completions` endpoint, so existing OpenAI SDK clients can talk to the local endpoint directly. This project always tries the local endpoint first and only falls back when an admin has explicitly enabled the fallback and the server has an API key.
 
+## Skills
+
+Skills are small plugins that extend the agent's toolset without changing the core code. Each skill lives in `skills/<name>/` with a `skill.json` manifest (name, entry module, dependencies, and tool schemas) plus a Python module exposing `SKILL_META["tools"]`. Skills are discovered at runtime and their tools are registered only when enabled by an admin:
+
+- Enable/disable from the **Skills** section on the admin config page, or
+- In the web chat, an admin can say "安装 pdf skill" / "enable pdf skill" to enable a skill immediately (changes are persisted to `data/company_config.json`).
+
+The bundled `pdf` skill (`skills/pdf/`) adds a `pdf_read` tool that extracts text from PDFs inside the configured local working directory, so the model can summarize or answer questions about PDF content. It requires the `pypdf` dependency and inherits the file-tool security rules (no paths outside the working directory, no hidden files).
+
 ## Verification
 
 ```sh

@@ -6,3 +6,4 @@ openai>=1.0
 python-dotenv>=1.0
 tavily-python>=0.5
 python-telegram-bot>=22.0
+pypdf>=5.0,<6.0

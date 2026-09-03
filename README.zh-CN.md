@@ -34,6 +34,15 @@ Windows 将 `.venv/bin/` 替换为 `.venv\Scripts\`。访问 `http://服务器�
 
 Ollama 提供 OpenAI 兼容的 `/v1/chat/completions` 接口，因此现有 OpenAI SDK 可直连本地端点；本项目会优先尝试本地端点，失败时才在管理员显式启用且服务器具备 API 密钥的情况下回退。
 
+## 技能（Skills）
+
+技能是扩展 Agent 工具集的小型插件，不需要改动核心代码。每个技能放在 `skills/<name>/` 目录，包含 `skill.json` 清单（名称、入口模块、依赖和工具 schema）以及暴露 `SKILL_META["tools"]` 的 Python 模块。系统在运行时发现技能，只有管理员启用后才会注册其工具：
+
+- 在管理配置页的“技能”分组中启用/停用，或
+- 管理员在网页聊天中说“安装 pdf skill / 启用 pdf 技能”，可立即启用（会保存到 `data/company_config.json`）。
+
+自带的 `pdf` 技能（`skills/pdf/`）提供 `pdf_read` 工具：读取“本地可操作目录”内的 PDF 并提取文本，让模型可以总结或问答 PDF 内容。它依赖 `pypdf`，并继承文件工具的安全规则（禁止越界、禁止隐藏文件）。
+
 ## 验证
 
 ```sh

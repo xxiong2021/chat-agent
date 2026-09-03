@@ -63,7 +63,7 @@ def test_chat_returns_readable_error_when_model_is_unavailable(tmp_path, monkeyp
     monkeypatch.setattr(web, "users", store)
 
     class UnavailableRouter:
-        def complete(self, user_id, messages, config):
+        def complete(self, user_id, messages, config, is_admin=False, config_store=None):
             raise RuntimeError("Ollama offline")
 
     monkeypatch.setattr(web, "run_agent", UnavailableRouter().complete)
